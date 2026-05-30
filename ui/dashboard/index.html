@@ -1,0 +1,1474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jobsift Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #22263a;
+    --border: #2e3250;
+    --accent: #5b7fff;
+    --accent2: #7c5cfc;
+    --text: #e8eaf6;
+    --muted: #8892b0;
+    --grade-a: #22d47a;
+    --grade-b: #e8a0ff;
+    --grade-c: #f5a623;
+    --grade-d: #e05252;
+    --fresh: #22d47a;
+    --ripe: #5b7fff;
+    --open: #8892b0;
+    --stale: #f5a623;
+    --ghost: #e05252;
+    --flag: #f5a623;
+    --tier1: #f5a623;
+    --tier2: #8892b0;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+
+  /* ── Drop zone ──────────────────────────────────── */
+  #dropzone {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    gap: 20px;
+    padding: 40px;
+  }
+  #dropzone h1 { font-size: 20px; font-weight: 700; }
+  #dropzone p  { color: var(--muted); font-size: 13px; text-align: center; }
+
+  #drop-target {
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    padding: 48px 64px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  #drop-target:hover, #drop-target.drag-over {
+    border-color: var(--accent);
+    background: rgba(91,127,255,0.06);
+    color: var(--text);
+  }
+  #drop-target .drop-icon { font-size: 36px; display: block; margin-bottom: 12px; }
+  #file-input { display: none; }
+
+  .browse-btn {
+    margin-top: 12px;
+    display: inline-block;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 20px;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .browse-btn:hover { background: #4a6ee0; }
+
+  #error-msg {
+    display: none;
+    color: var(--grade-d);
+    background: rgba(224,82,82,0.1);
+    border: 1px solid rgba(224,82,82,0.3);
+    border-radius: 6px;
+    padding: 10px 16px;
+    font-size: 13px;
+    max-width: 500px;
+    text-align: center;
+  }
+
+  /* ── Dashboard ──────────────────────────────────── */
+  #dashboard { display: none; }
+
+  header {
+    background: linear-gradient(135deg, #1a1d27 0%, #22263a 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 24px 32px 20px;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  header h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; }
+  header .meta {
+    margin-top: 6px;
+    color: var(--muted);
+    font-size: 13px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+
+  .reload-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: 6px;
+    padding: 5px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    font-family: inherit;
+    white-space: nowrap;
+    align-self: flex-start;
+  }
+  .reload-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  .search-url {
+    margin: 16px 32px 0;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .search-url a { color: var(--accent); text-decoration: none; word-break: break-all; }
+  .search-url a:hover { text-decoration: underline; }
+  .search-url strong { color: var(--text); white-space: nowrap; }
+
+  .stats-bar {
+    display: flex;
+    gap: 12px;
+    padding: 16px 32px;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--border);
+  }
+  .stat-chip {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 5px 14px;
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .stat-chip .val { font-weight: 700; font-size: 13px; color: var(--text); }
+
+  /* ── Filter bar ─────────────────────────────────── */
+  .filter-bar {
+    display: flex;
+    gap: 28px;
+    padding: 10px 32px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .filter-group {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    font-size: 12px;
+  }
+  .filter-group > span {
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-size: 10px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .filter-group label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+    color: var(--text);
+    font-size: 12px;
+    user-select: none;
+  }
+  .filter-group input[type=checkbox],
+  .filter-group input[type=radio] { accent-color: var(--accent); cursor: pointer; }
+
+  .track-pill-REM { color: #7de8b8; }
+  .track-pill-IRL { color: #f5c46a; }
+  .track-pill-ADD { color: #8fa8ff; }
+
+  /* ── Section ────────────────────────────────────── */
+  .section { padding: 20px 32px 32px; }
+
+  .section-header {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--muted);
+    padding: 24px 0 10px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .section-header .pill {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 2px 8px;
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .section-header .count {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--muted);
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+
+  /* ── Tab bar ────────────────────────────────────── */
+  .tab-bar {
+    display: flex;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .tab-btn {
+    padding: 9px 18px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    font-family: inherit;
+    transition: color 0.15s, border-color 0.15s;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    white-space: nowrap;
+  }
+  .tab-btn.active  { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-btn:hover:not(.active) { color: var(--text); }
+  .tab-count {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1px 6px;
+    font-size: 10px;
+    color: var(--muted);
+    font-weight: 400;
+  }
+
+  /* ── Scrollable table wrapper ────────────────────── */
+  .table-scroll {
+    max-height: 500px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+  }
+  .table-scroll::-webkit-scrollbar { width: 6px; }
+  .table-scroll::-webkit-scrollbar-track { background: transparent; }
+  .table-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  .table-scroll::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+  .table-scroll table { width: 100%; border-collapse: collapse; }
+
+  /* Sticky header inside scroll */
+  .table-scroll thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--surface2);
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    padding: 10px 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+    user-select: none;
+  }
+  .table-scroll thead th.sortable { cursor: pointer; }
+  .table-scroll thead th.sortable:hover { color: var(--text); }
+  .sort-icon { margin-left: 4px; opacity: 0.35; font-size: 10px; }
+  th.sort-active .sort-icon { opacity: 1; color: var(--accent); }
+
+  tbody tr.job-row {
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  tbody tr.job-row:hover    { background: rgba(91,127,255,0.06); }
+  tbody tr.job-row.expanded { background: rgba(91,127,255,0.08); }
+  tbody td { padding: 11px 12px; vertical-align: middle; }
+
+  .company-name  { font-weight: 600; color: var(--text); white-space: nowrap; }
+  .role-title    { color: var(--accent); font-weight: 500; font-size: 13px; }
+  .location-text { color: var(--muted); font-size: 12px; }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    border-radius: 4px;
+    padding: 2px 7px;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .grade-A { background: rgba(34,212,122,0.15);  color: var(--grade-a); border: 1px solid rgba(34,212,122,0.3); }
+  .grade-B { background: rgba(232,160,255,0.12); color: var(--grade-b); border: 1px solid rgba(232,160,255,0.3); }
+  .grade-C { background: rgba(245,166,35,0.15);  color: var(--grade-c); border: 1px solid rgba(245,166,35,0.3); }
+
+  .cap-arrow { font-size: 9px; opacity: 0.75; }
+
+  /* Track badges */
+  .track-REM { background: rgba(34,212,122,0.12); color: #7de8b8; border: 1px solid rgba(34,212,122,0.2); }
+  .track-IRL { background: rgba(245,166,35,0.12); color: #f5c46a; border: 1px solid rgba(245,166,35,0.2); }
+  .track-ADD { background: rgba(91,127,255,0.12); color: #8fa8ff; border: 1px solid rgba(91,127,255,0.2); }
+
+  /* Work type badges */
+  .type-remote   { background: rgba(34,212,122,0.08); color: #7de8b8; border: 1px solid rgba(34,212,122,0.2); font-weight: 500; }
+  .type-hybrid   { background: rgba(91,127,255,0.08); color: #8fa8ff; border: 1px solid rgba(91,127,255,0.2); font-weight: 500; }
+  .type-inperson { background: rgba(245,166,35,0.08); color: #f5c46a; border: 1px solid rgba(245,166,35,0.2); font-weight: 500; }
+
+  /* Posted age coloring */
+  .posted-Fresh   { color: var(--fresh); }
+  .posted-Ripe    { color: var(--ripe);  }
+  .posted-Open    { color: var(--open);  }
+  .posted-Stale   { color: var(--stale); font-style: italic; }
+  .posted-Ghost   { color: var(--ghost); font-style: italic; }
+  .posted-Unknown { color: var(--muted); }
+
+  .salary         { color: var(--text); white-space: nowrap; font-size: 13px; }
+  .salary.unknown { color: var(--muted); font-style: italic; }
+
+  /* ── Source tabs (Jobright / ATS Direct) ──────────── */
+  .source-tab-bar { display: flex; gap: 4px; align-items: center; }
+  .source-tab {
+    padding: 4px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .source-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .source-tab.active .tab-count { color: #fff; }
+  .source-tab .tab-count {
+    display: inline-block;
+    background: rgba(255,255,255,0.18);
+    border-radius: 10px;
+    padding: 0 5px;
+    margin-left: 4px;
+    font-size: 11px;
+  }
+
+  .apply-link {
+    color: var(--accent);
+    text-decoration: none;
+    font-size: 12px;
+    border: 1px solid rgba(91,127,255,0.4);
+    border-radius: 4px;
+    padding: 3px 8px;
+    display: inline-block;
+    white-space: nowrap;
+    transition: background 0.15s;
+  }
+  .apply-link:hover { background: rgba(91,127,255,0.15); }
+
+  .expand-icon {
+    color: var(--muted);
+    font-size: 12px;
+    display: inline-block;
+    transition: transform 0.2s;
+  }
+
+  /* Detail row */
+  .detail-row { display: none; }
+  .detail-row.visible { display: table-row; }
+
+  .detail-cell {
+    padding: 0 12px 16px 12px;
+    background: var(--surface);
+    border-bottom: 2px solid var(--accent2);
+  }
+  .detail-inner {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    padding-top: 16px;
+  }
+  .detail-block h4 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+    color: var(--muted);
+    margin-bottom: 8px;
+    font-weight: 600;
+  }
+
+  .dim-table { width: 100%; border-collapse: collapse; }
+  .dim-table td {
+    padding: 5px 8px;
+    font-size: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .dim-table tr:last-child td { border-bottom: none; }
+  .dim-table td:first-child  { color: var(--muted); width: 52%; }
+  .dim-table td:nth-child(2) { font-weight: 700; text-align: center; width: 13%; }
+  .dim-table td:last-child   { color: var(--muted); font-size: 11px; }
+
+  .dim-5 { color: var(--grade-a); }
+  .dim-4 { color: #7ecbff; }
+  .dim-3 { color: var(--text); }
+  .dim-2 { color: var(--stale); }
+  .dim-1 { color: var(--grade-d); }
+
+  .raw-score {
+    margin-top: 10px;
+    padding: 8px 10px;
+    background: var(--surface2);
+    border-radius: 6px;
+    font-size: 12px;
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .raw-score span   { color: var(--muted); }
+  .raw-score strong { color: var(--text); }
+  .cap-explain { color: var(--flag); }
+
+  .notes-text {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.6;
+    background: var(--surface2);
+    border-radius: 6px;
+    padding: 10px;
+  }
+
+  .prescreen {
+    margin-bottom: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .prescreen-item {
+    font-size: 12px;
+    display: flex;
+    align-items: flex-start;
+    gap: 7px;
+  }
+  .ps-icon { width: 16px; flex-shrink: 0; margin-top: 1px; }
+  .ps-pass { color: var(--grade-a); }
+  .ps-warn { color: var(--flag); }
+
+  .addendum-note {
+    background: rgba(245,166,35,0.08);
+    border: 1px solid rgba(245,166,35,0.25);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 12px;
+    color: var(--stale);
+    margin-top: 10px;
+  }
+
+  /* Observation / Key insight */
+  .observation-box {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 18px;
+    font-size: 13px;
+    color: var(--muted);
+    line-height: 1.75;
+    margin-bottom: 24px;
+  }
+  .observation-box strong { color: var(--text); }
+
+  .no-results {
+    text-align: center;
+    padding: 40px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  /* ── Rejected panel ─────────────────────────────── */
+  .rej-panel {
+    margin-top: 32px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .rej-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 16px;
+    background: var(--surface);
+    cursor: pointer;
+    user-select: none;
+    border-bottom: 1px solid transparent;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .rej-header:hover { background: var(--surface2); }
+  .rej-header.open  { border-bottom-color: var(--border); }
+
+  .rej-header-label {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .rej-counts {
+    margin-left: 4px;
+    display: flex;
+    gap: 6px;
+  }
+  .tier1-pill {
+    background: rgba(245,166,35,0.12);
+    border: 1px solid rgba(245,166,35,0.3);
+    border-radius: 10px;
+    padding: 2px 8px;
+    font-size: 11px;
+    color: var(--tier1);
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .tier2-pill {
+    background: rgba(136,146,176,0.1);
+    border: 1px solid rgba(136,146,176,0.2);
+    border-radius: 10px;
+    padding: 2px 8px;
+    font-size: 11px;
+    color: var(--tier2);
+    text-transform: none;
+    letter-spacing: 0;
+  }
+
+  .rej-toggle-icon {
+    color: var(--muted);
+    font-size: 11px;
+    margin-left: auto;
+    transition: transform 0.2s;
+  }
+
+  /* Rejected sub-filter bar */
+  .rej-filter-bar {
+    display: none;
+    gap: 28px;
+    padding: 9px 16px;
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .rej-filter-bar.visible { display: flex; }
+
+  /* Reason category badge */
+  .reason-cat {
+    display: inline-block;
+    border-radius: 4px;
+    padding: 2px 7px;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .rcat-salary_floor  { background: rgba(245,166,35,0.12); color: var(--grade-c); border: 1px solid rgba(245,166,35,0.25); }
+  .rcat-clearance     { background: rgba(224,82,82,0.12);  color: var(--grade-d); border: 1px solid rgba(224,82,82,0.25); }
+  .rcat-geo_restriction { background: rgba(91,127,255,0.12); color: #8fa8ff; border: 1px solid rgba(91,127,255,0.25); }
+  .rcat-travel        { background: rgba(91,127,255,0.12); color: #8fa8ff; border: 1px solid rgba(91,127,255,0.25); }
+  .rcat-domain_exclusion { background: rgba(136,146,176,0.1); color: var(--muted); border: 1px solid rgba(136,146,176,0.2); }
+  .rcat-title_level   { background: rgba(136,146,176,0.1); color: var(--muted); border: 1px solid rgba(136,146,176,0.2); }
+  .rcat-non_pm        { background: rgba(136,146,176,0.1); color: var(--muted); border: 1px solid rgba(136,146,176,0.2); }
+  .rcat-prescreen     { background: rgba(136,146,176,0.1); color: var(--muted); border: 1px solid rgba(136,146,176,0.2); }
+  .rcat-grade_d       { background: rgba(224,82,82,0.08);  color: var(--grade-d); border: 1px solid rgba(224,82,82,0.2); }
+  .rcat-other         { background: rgba(136,146,176,0.1); color: var(--muted); border: 1px solid rgba(136,146,176,0.2); }
+
+  /* Rejected detail cell */
+  .rej-detail-cell {
+    padding: 12px 16px 16px;
+    background: var(--surface);
+    border-bottom: 2px solid rgba(136,146,176,0.3);
+  }
+  .rej-reason-full {
+    font-size: 12px;
+    color: var(--text);
+    background: var(--surface2);
+    border-radius: 6px;
+    padding: 10px 12px;
+    line-height: 1.6;
+    margin-bottom: 8px;
+  }
+  .rej-notes {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+
+  @media (max-width: 900px) {
+    .detail-inner  { grid-template-columns: 1fr; }
+    .section       { padding: 0 16px 24px; }
+    header         { padding: 16px; }
+    .stats-bar     { padding: 12px 16px; }
+    .search-url    { margin: 12px 16px 0; }
+    .filter-bar    { padding: 10px 16px; gap: 16px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ── Drop zone ─────────────────────────────────────── -->
+<div id="dropzone">
+  <h1>Jobsift</h1>
+  <!-- progress panel (shown during a scrape) -->
+  <div id="progress-panel" style="display:none;width:100%;max-width:520px;margin:0 auto 24px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px 24px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <span id="progress-msg" style="font-size:14px;font-weight:600">Starting...</span>
+      <span id="progress-pct" style="font-size:13px;color:var(--muted)">0%</span>
+    </div>
+    <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden">
+      <div id="progress-bar" style="height:100%;background:var(--accent);width:0%;transition:width .3s"></div>
+    </div>
+    <button onclick="window.electronAPI.cancelScrape()" style="margin-top:14px;background:none;border:1px solid var(--border);color:var(--muted);padding:6px 16px;border-radius:5px;font-size:12px;cursor:pointer">Cancel</button>
+  </div>
+  <!-- empty state (no results yet) -->
+  <div id="empty-state" style="text-align:center;color:var(--muted);padding:40px 0">
+    <div style="font-size:48px;margin-bottom:16px">&#128269;</div>
+    <p style="font-size:15px;margin-bottom:8px">No results yet.</p>
+    <p style="font-size:13px">Use the tray icon to run a search, or load a past result below.</p>
+    <button onclick="loadPastResult()" style="margin-top:18px;background:var(--accent);color:#fff;border:none;padding:9px 22px;border-radius:6px;font-size:14px;cursor:pointer">Load Past Result</button>
+  </div>
+  <input type="file" id="file-input" accept=".json" style="display:none">
+  <div id="error-msg"></div>
+</div>
+
+<!-- ── Dashboard ─────────────────────────────────────── -->
+<div id="dashboard">
+  <header>
+    <div>
+      <h1>Jobsift</h1>
+      <div class="meta" id="header-meta"></div>
+    </div>
+    <button class="reload-btn" onclick="resetToDropzone()">&#8617; Load different run</button>
+  </header>
+
+  <div class="stats-bar" id="stats-bar"></div>
+
+  <!-- Global filters: Source + Track + Type -->
+  <div class="filter-bar">
+    <div class="filter-group">
+      <span>Source</span>
+      <div class="source-tab-bar">
+        <button class="source-tab active" id="src-jobright" onclick="handleSourceTab('jobright')">Jobright <span class="tab-count" id="src-jobright-count">0</span></button>
+        <button class="source-tab"        id="src-ats"      onclick="handleSourceTab('ats')">ATS Direct <span class="tab-count" id="src-ats-count">0</span></button>
+      </div>
+    </div>
+    <div class="filter-group">
+      <span>Track</span>
+      <label><input type="checkbox" id="filt-REM" checked onchange="onFilterChange()"> <span class="track-pill-REM">REM</span></label>
+      <label><input type="checkbox" id="filt-IRL" checked onchange="onFilterChange()"> <span class="track-pill-IRL">IRL</span></label>
+      <label><input type="checkbox" id="filt-ADD" checked onchange="onFilterChange()"> <span class="track-pill-ADD">ADD</span></label>
+    </div>
+    <div class="filter-group">
+      <span>Type</span>
+      <label><input type="checkbox" id="filt-type-TPM" checked onchange="onFilterChange()"> TPM</label>
+      <label><input type="checkbox" id="filt-type-PM"  checked onchange="onFilterChange()"> PM</label>
+      <label><input type="checkbox" id="filt-type-PjM" checked onchange="onFilterChange()"> PjM</label>
+      <label><input type="checkbox" id="filt-type-Other" checked onchange="onFilterChange()"> Other</label>
+    </div>
+    <button class="browse-btn" style="padding:4px 10px;font-size:11px;background:var(--surface2);color:var(--muted);border:1px solid var(--border);margin-left:auto"
+            onclick="resetFilters()">Reset filters</button>
+  </div>
+
+  <div class="section">
+    <div class="observation-box" id="observation-box"></div>
+
+    <!-- Remote section -->
+    <div class="section-header">
+      🌐 Remote <span class="pill">Track REM · D6 = 5 · No cap</span>
+      <span class="count" id="remote-count"></span>
+    </div>
+    <div id="remote-section"></div>
+
+    <!-- Hybrid section -->
+    <div class="section-header" style="margin-top:8px">
+      <span id="label-hybrid">🔀 Hybrid Local</span> <span class="pill">D6 cap C · TC ≥ $220K</span>
+      <span class="count" id="hybrid-count"></span>
+    </div>
+    <div id="hybrid-section"></div>
+
+    <!-- In-Person section -->
+    <div class="section-header" style="margin-top:8px">
+      <span id="label-inperson">📍 In-Person Local</span> <span class="pill">Track IRL · TC ≥ $220K</span>
+      <span class="count" id="inperson-count"></span>
+    </div>
+    <div id="inperson-section"></div>
+
+    <!-- ── Rejected panel ─────────────────────────── -->
+    <div class="rej-panel" id="rej-panel">
+      <!-- Clickable header -->
+      <div class="rej-header" id="rej-header" onclick="toggleRejPanel()">
+        <div class="rej-header-label">
+          ✗ Screened Out
+          <div class="rej-counts">
+            <span class="tier1-pill" id="rej-t1-pill"></span>
+            <span class="tier2-pill" id="rej-t2-pill" style="display:none"></span>
+          </div>
+        </div>
+        <span class="rej-toggle-icon" id="rej-toggle-icon">▶</span>
+      </div>
+
+      <!-- Tier + tab filter bar - visible only when panel is open -->
+      <div class="rej-filter-bar" id="rej-filter-bar">
+        <div class="filter-group">
+          <span>Show</span>
+          <label><input type="radio" name="tier" id="tier-t1" value="tier1" checked onchange="onRejFilterChange()"> Near-miss only</label>
+          <label><input type="radio" name="tier" id="tier-all" value="all" onchange="onRejFilterChange()"> All rejections</label>
+        </div>
+        <div class="filter-group" id="rej-tab-group">
+          <span>Role type</span>
+          <button class="tab-btn active" id="rej-tab-pm"  onclick="handleRejTab('pm')">TPM &amp; PM <span class="tab-count" id="rej-pm-count">0</span></button>
+          <button class="tab-btn"        id="rej-tab-pjm" onclick="handleRejTab('pjm')">Project Manager <span class="tab-count" id="rej-pjm-count">0</span></button>
+        </div>
+      </div>
+
+      <!-- Content (lazy-rendered on first open) -->
+      <div id="rej-content" style="display:none"></div>
+    </div>
+
+  </div><!-- /section -->
+</div><!-- /dashboard -->
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// CONSTANTS
+// ═══════════════════════════════════════════════════════════════
+const DIM_LABELS = [
+  'D1 - Title & Level',
+  'D2 - Scope Alignment',
+  'D3 - Domain Fit',
+  'D4 - Technical Depth',
+  'D5 - Seniority / Comp',
+  'D6 - Work Arrangement',
+];
+const DIM_KEYS  = ['d1','d2','d3','d4','d5','d6'];
+const GRADE_ORDER = { 'A': 1, 'B': 2, 'C': 3, 'D': 4 };
+
+const REJ_CAT_ORDER = [
+  'salary_floor','clearance','geo_restriction','travel',
+  'domain_exclusion','title_level','non_pm','prescreen','grade_d','other'
+];
+const REJ_CAT_LABELS = {
+  salary_floor:     'Salary Below Floor',
+  clearance:        'Clearance / Competitor',
+  geo_restriction:  'Geographic Restriction',
+  travel:           'Travel Requirement',
+  domain_exclusion: 'Domain / Expertise',
+  title_level:      'Title Level Mismatch',
+  non_pm:           'Non-PM Title',
+  prescreen:        'Pre-Screen Failure',
+  grade_d:          'Grade D',
+  other:            'Other',
+};
+
+// ═══════════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════════
+let allRoles    = [];
+let filteredRoles = [];
+let allRejRoles = [];
+let rejRendered = false;
+let rejOpen     = false;
+let sourceTab   = 'jobright';
+
+const isAtsRole = r => !!(r.id && r.id.startsWith('ats_'));
+
+const sectionState = {
+  remote:   { tab: 'pm', sortCol: 'grade', sortDir: 'asc' },
+  hybrid:   { tab: 'pm', sortCol: 'grade', sortDir: 'asc' },
+  inperson: { tab: 'pm', sortCol: 'grade', sortDir: 'asc' },
+};
+const rejState = { tab: 'pm', sortCol: 'category', sortDir: 'asc', tier: 'tier1' };
+
+// ═══════════════════════════════════════════════════════════════
+// ELECTRON BOOT
+// ═══════════════════════════════════════════════════════════════
+const fileInput  = document.getElementById('file-input');
+const errorMsg   = document.getElementById('error-msg');
+
+// Load latest result on startup
+if (window.electronAPI) {
+  window.electronAPI.getLatestResult().then(data => {
+    if (data) render(data);
+    // else empty-state is already visible
+  }).catch(() => {});
+
+  // Scrape progress events
+  window.electronAPI.onScrapeProgress(({ step, message, pct }) => {
+    document.getElementById('empty-state').style.display  = 'none';
+    document.getElementById('progress-panel').style.display = 'block';
+    document.getElementById('progress-msg').textContent   = message;
+    document.getElementById('progress-pct').textContent   = Math.round(pct) + '%';
+    document.getElementById('progress-bar').style.width   = Math.round(pct) + '%';
+  });
+
+  window.electronAPI.onScrapeComplete(({ outputPath, counts }) => {
+    document.getElementById('progress-panel').style.display = 'none';
+    window.electronAPI.getLatestResult().then(data => { if (data) render(data); });
+  });
+
+  window.electronAPI.onScrapeError(({ message }) => {
+    document.getElementById('progress-panel').style.display = 'none';
+    document.getElementById('empty-state').style.display    = 'block';
+    showError('Scrape failed: ' + message);
+  });
+}
+
+// File input still works as a fallback (load any result JSON manually)
+fileInput.addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    try   { render(JSON.parse(ev.target.result)); }
+    catch (err) { showError('Invalid JSON: ' + err.message); }
+  };
+  reader.readAsText(file);
+});
+
+async function loadPastResult() {
+  if (!window.electronAPI) {
+    fileInput.click();
+    return;
+  }
+  const paths = await window.electronAPI.listResults();
+  if (!paths.length) { showError('No past results found.'); return; }
+  // Show a simple picker using the browser's built-in select or just load the second-most-recent
+  const path = paths[0]; // most recent (already loaded); try next or allow picking
+  if (paths.length > 1) {
+    const label = paths[1].split(/[/\\]/).pop();
+    if (confirm('Load previous run: ' + label + '?')) {
+      const data = await window.electronAPI.loadResult(paths[1]);
+      render(data);
+    }
+  } else {
+    showError('Only one result found - already loaded.');
+  }
+}
+
+function showError(msg) {
+  errorMsg.textContent   = msg;
+  errorMsg.style.display = 'block';
+}
+
+function resetToDropzone() {
+  document.getElementById('dashboard').style.display = 'none';
+  document.getElementById('dropzone').style.display  = 'flex';
+  fileInput.value = '';
+  errorMsg.style.display = 'none';
+  // Reset rejected panel state
+  rejOpen = false; rejRendered = false;
+  sourceTab = 'jobright';
+  document.getElementById('src-jobright').classList.add('active');
+  document.getElementById('src-ats').classList.remove('active');
+  document.getElementById('rej-content').style.display   = 'none';
+  document.getElementById('rej-filter-bar').classList.remove('visible');
+  document.getElementById('rej-header').classList.remove('open');
+  document.getElementById('rej-toggle-icon').style.transform = '';
+  document.getElementById('rej-tab-pm').classList.add('active');
+  document.getElementById('rej-tab-pjm').classList.remove('active');
+  document.getElementById('tier-t1').checked = true;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// RENDER - main entry point
+// ═══════════════════════════════════════════════════════════════
+function render(data) {
+  // Support both combined format {accepted:{...}, rejected:{...}}
+  // and legacy single-section format {meta:{...}, roles:[...]}
+  const isLegacy = !data.accepted;
+  const accData  = isLegacy ? data         : data.accepted;
+  const rejData  = isLegacy ? null         : data.rejected;
+
+  const meta   = accData.meta  || {};
+  allRoles     = accData.roles || [];
+  allRejRoles  = rejData ? (rejData.roles || []) : [];
+
+  // Section header labels - driven by track_locations from the JSON meta
+  const _irlLoc = (meta.track_locations || {}).IRL;
+  const _locSuffix = _irlLoc ? ` ${_irlLoc}` : '';
+  document.getElementById('label-hybrid').textContent   = `🔀 Hybrid${_locSuffix}`;
+  document.getElementById('label-inperson').textContent = `📍 In-Person${_locSuffix}`;
+
+  // Source tab counts
+  document.getElementById('src-jobright-count').textContent = allRoles.filter(r => !isAtsRole(r)).length;
+  document.getElementById('src-ats-count').textContent      = allRoles.filter(r =>  isAtsRole(r)).length;
+
+  // Header meta
+  document.getElementById('header-meta').innerHTML = [
+    meta.date             ? `<span>📅 ${meta.date}</span>` : '',
+    meta.search_term      ? `<span>🔍 ${meta.search_term}</span>` : '',
+    meta.locations        ? `<span>🌐 ${meta.locations}</span>` : '',
+    meta.qualifying_count != null ? `<span>📊 ${meta.qualifying_count} qualifying roles</span>` : '',
+  ].filter(Boolean).join('');
+
+
+  // Stats bar
+  const chips = [
+    meta.reviewed_count   != null ? chip('Reviewed',    `${meta.reviewed_count} / ${meta.total_results || '?'}`) : '',
+    meta.qualifying_count != null ? chip('Qualifying',  meta.qualifying_count) : '',
+    meta.grade_a          != null ? chip('Grade A',     meta.grade_a,  'var(--grade-a)') : '',
+    meta.grade_b          != null ? chip('Grade B',     meta.grade_b,  'var(--grade-b)') : '',
+    meta.grade_c          != null ? chip('Grade C',     meta.grade_c,  'var(--grade-c)') : '',
+    meta.excluded_count   != null ? chip('Excluded',    meta.excluded_count) : '',
+    meta.track_r_count    != null ? chip('REM',     meta.track_r_count, '#7de8b8') : '',
+    meta.track_i_count    != null ? chip('IRL',     meta.track_i_count, '#f5c46a') : '',
+    meta.track_s_count    != null ? chip('ADD',     meta.track_s_count, '#8fa8ff') : '',
+  ].filter(Boolean).join('');
+  document.getElementById('stats-bar').innerHTML = chips;
+
+  // Key observation
+  if (meta.key_observation) {
+    document.getElementById('observation-box').innerHTML =
+      `<strong>Key observation:</strong> ${esc(meta.key_observation)}`;
+  }
+
+  // Rejected panel header counts
+  if (allRejRoles.length) {
+    const t1 = allRejRoles.filter(r => r.rejection_tier === 'tier1').length;
+    const t2 = allRejRoles.filter(r => r.rejection_tier === 'tier2').length;
+    document.getElementById('rej-t1-pill').textContent  = `${t1} near-miss`;
+    document.getElementById('rej-t2-pill').textContent  = `+${t2} noise`;
+    document.getElementById('rej-panel').style.display = 'block';
+  } else {
+    document.getElementById('rej-panel').style.display = 'none';
+  }
+
+  applyTrackFilter();
+
+  document.getElementById('dropzone').style.display  = 'none';
+  document.getElementById('dashboard').style.display = 'block';
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ACCEPTED: FILTER + SECTIONS
+// ═══════════════════════════════════════════════════════════════
+function onFilterChange() {
+  applyTrackFilter();
+  if (rejOpen && rejRendered) renderRejectedSection();
+}
+
+function handleSourceTab(tab) {
+  sourceTab = tab;
+  document.getElementById('src-jobright').classList.toggle('active', tab === 'jobright');
+  document.getElementById('src-ats').classList.toggle('active',      tab === 'ats');
+  applyTrackFilter();
+  if (rejOpen) { rejRendered = false; renderRejectedSection(); rejRendered = true; }
+}
+
+function applyTrackFilter() {
+  const activeTracks = new Set(
+    ['REM','IRL','ADD'].filter(t => document.getElementById('filt-' + t)?.checked)
+  );
+  const activeTypes = new Set(
+    ['TPM','PM','PjM','Other'].filter(t => document.getElementById('filt-type-' + t)?.checked)
+  );
+  filteredRoles = allRoles.filter(r =>
+    activeTracks.has(r.track) && activeTypes.has(r.role_cat || 'Other') &&
+    (sourceTab === 'ats' ? isAtsRole(r) : !isAtsRole(r))
+  );
+  renderAllSections();
+}
+
+function resetFilters() {
+  ['REM','IRL','ADD'].forEach(t => {
+    const el = document.getElementById('filt-' + t);
+    if (el) el.checked = true;
+  });
+  ['TPM','PM','PjM','Other'].forEach(t => {
+    const el = document.getElementById('filt-type-' + t);
+    if (el) el.checked = true;
+  });
+  onFilterChange();
+}
+
+function renderAllSections() {
+  renderSection('remote',   'remote');
+  renderSection('hybrid',   'hybrid');
+  renderSection('inperson', 'in-person');
+}
+
+function renderSection(sectionId, bucket) {
+  const ss           = sectionState[sectionId];
+  const sectionRoles = filteredRoles.filter(r => r.work_type_bucket === bucket);
+  const pmRoles      = sectionRoles.filter(r => r.role_cat !== 'PjM');
+  const pjmRoles     = sectionRoles.filter(r => r.role_cat === 'PjM');
+  const activeRoles  = ss.tab === 'pm' ? pmRoles : pjmRoles;
+  const sorted       = sortRoles(activeRoles, ss.sortCol, ss.sortDir);
+
+  const countEl = document.getElementById(sectionId + '-count');
+  if (countEl) countEl.textContent = `${sectionRoles.length} total`;
+
+  const container = document.getElementById(sectionId + '-section');
+  if (!container) return;
+  container.innerHTML = buildTabBar(sectionId, pmRoles.length, pjmRoles.length) +
+                        buildTableHtml(sorted, sectionId);
+}
+
+function buildTabBar(sectionId, pmCount, pjmCount) {
+  const ss = sectionState[sectionId];
+  const pmActive  = ss.tab === 'pm'  ? 'active' : '';
+  const pjmActive = ss.tab === 'pjm' ? 'active' : '';
+  return `<div class="tab-bar">
+    <button class="tab-btn ${pmActive}"  onclick="handleTab('${sectionId}','pm')">
+      TPM &amp; PM <span class="tab-count">${pmCount}</span>
+    </button>
+    <button class="tab-btn ${pjmActive}" onclick="handleTab('${sectionId}','pjm')">
+      Project Manager <span class="tab-count">${pjmCount}</span>
+    </button>
+  </div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ACCEPTED: TABLE BUILDER
+// ═══════════════════════════════════════════════════════════════
+const COLS = [
+  { key: 'expand',  label: '',        sortable: false, style: 'width:24px' },
+  { key: 'company', label: 'Company', sortable: true },
+  { key: 'title',   label: 'Role',    sortable: true },
+  { key: 'track',   label: 'Track',   sortable: false },
+  { key: 'type',    label: 'Type',    sortable: false },
+  { key: 'posted',  label: 'Posted',  sortable: true },
+  { key: 'salary',  label: 'Salary',  sortable: false },
+  { key: 'grade',   label: 'Grade',   sortable: true },
+  { key: 'apply',   label: 'Apply',   sortable: false },
+];
+
+function buildTableHtml(roles, sectionId) {
+  const ss      = sectionState[sectionId];
+  const colspan = COLS.length;
+  const theadCells = COLS.map(col => {
+    if (!col.sortable) return `<th${col.style ? ` style="${col.style}"` : ''}>${col.label}</th>`;
+    const isActive = ss.sortCol === col.key;
+    const icon = isActive ? (ss.sortDir === 'asc' ? '↑' : '↓') : '↕';
+    return `<th class="sortable${isActive ? ' sort-active' : ''}" onclick="handleSort('${sectionId}','${col.key}')">
+      ${col.label}<span class="sort-icon">${icon}</span>
+    </th>`;
+  }).join('');
+  const rows = roles.length
+    ? roles.map(r => roleRowPair(r, colspan)).join('')
+    : `<tr><td colspan="${colspan}"><div class="no-results">No roles found.</div></td></tr>`;
+  return `<div class="table-scroll"><table><thead><tr>${theadCells}</tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ACCEPTED: ROW PAIR (main + expandable detail)
+// ═══════════════════════════════════════════════════════════════
+function roleRowPair(r, colspan) {
+  const id   = r.id || Math.random().toString(36).slice(2);
+  const dims = r.dimensions || {};
+  const pre  = r.prescreen  || {};
+
+  const typeMap = {
+    'remote':    { label: 'Remote',    cls: 'type-remote' },
+    'hybrid':    { label: 'Hybrid',    cls: 'type-hybrid' },
+    'in-person': { label: 'In-Person', cls: 'type-inperson' },
+  };
+  const wt = typeMap[r.work_type_bucket] || { label: r.work_type_bucket || '-', cls: '' };
+
+  const capped    = r.fit && r.grade && r.fit !== r.grade;
+  const capArrow  = capped ? `<span class="cap-arrow" title="Capped from ${r.fit}">↓</span>` : '';
+  const gradeBadge = `<span class="badge grade-${r.grade}">${r.grade}${capArrow}</span>`;
+
+  const ageTier   = r.age_tier || 'Unknown';
+  const postedHtml = `<span class="posted-${ageTier}">${esc(r.posted || 'Unknown')}</span>`;
+  const trackBadge = r.track ? `<span class="badge track-${r.track}">${r.track}</span>` : '-';
+
+  const mainRow = `
+    <tr class="job-row" onclick="toggle('${id}')">
+      <td><span class="expand-icon" id="icon-${id}">▶</span></td>
+      <td>
+        <div class="company-name">${esc(r.company)}</div>
+        <div class="location-text">${esc(r.location || '')}</div>
+      </td>
+      <td><div class="role-title">${esc(r.role_title)}</div></td>
+      <td>${trackBadge}</td>
+      <td><span class="badge ${wt.cls}">${wt.label}</span></td>
+      <td>${postedHtml}</td>
+      <td><span class="salary${r.salary_unknown ? ' unknown' : ''}">${esc(r.salary || 'Not listed')}</span></td>
+      <td>${gradeBadge}</td>
+      <td>${r.apply_url
+        ? `<a class="apply-link" href="${r.apply_url}" target="_blank" onclick="event.stopPropagation()">Apply →</a>`
+        : '<span style="color:var(--muted);font-size:12px">-</span>'}
+      </td>
+    </tr>`;
+
+  const dimRows = DIM_KEYS.map((key, i) => {
+    const d = dims[key] || {};
+    const score = d.score != null ? d.score : '-';
+    return `<tr><td>${DIM_LABELS[i]}</td><td class="dim-${score}">${score}</td><td>${esc(d.rationale || '')}</td></tr>`;
+  }).join('');
+
+  const fitPart = capped
+    ? `<span>Fit: <strong class="cap-explain">${r.fit} → capped to ${r.grade}</strong></span>
+       <span class="cap-explain">⚠ ${r.age_tier || ''} posting</span>`
+    : '';
+  const capNoteParts = [
+    r.d6_cap  ? `D6 cap applied: <strong>${r.d6_cap}</strong>` : '',
+    r.age_cap ? `Age cap: <strong>${r.age_cap}</strong>` : '',
+  ].filter(Boolean);
+
+  const rawScore = `<div class="raw-score">
+    <span>Score: <strong>${r.weighted_score != null ? r.weighted_score : '-'} / 25</strong></span>
+    <span>Grade: <strong>${r.grade}</strong></span>
+    ${fitPart}
+    ${capNoteParts.map(s => `<span>${s}</span>`).join('')}
+    ${r.age_tier ? `<span>Age: <strong class="posted-${r.age_tier}">${r.age_tier}</strong></span>` : ''}
+  </div>`;
+
+  const prescreenHtml = Object.entries(pre).map(([, q]) => {
+    const cls  = q.pass ? 'ps-pass' : 'ps-warn';
+    const icon = q.pass ? '✓' : '⚠';
+    return `<div class="prescreen-item"><span class="ps-icon ${cls}">${icon}</span><span>${esc(q.note || '')}</span></div>`;
+  }).join('');
+
+  const flagsHtml = (r.flags || []).map(f =>
+    `<div style="color:var(--flag);font-size:12px;margin-top:4px">⚠ ${esc(f)}</div>`
+  ).join('');
+
+  const addendumHtml = r.addendum_note
+    ? `<div class="addendum-note">⚠ ADDENDUM: ${esc(r.addendum_note)}</div>` : '';
+
+  const detailRow = `
+    <tr class="detail-row" id="detail-${id}">
+      <td colspan="${colspan}" class="detail-cell">
+        <div class="detail-inner">
+          <div class="detail-block">
+            <h4>Dimension Scores</h4>
+            <table class="dim-table">${dimRows}</table>
+            ${rawScore}
+          </div>
+          <div class="detail-block">
+            <h4>Pre-Screen &amp; Notes</h4>
+            ${prescreenHtml ? `<div class="prescreen">${prescreenHtml}</div>` : ''}
+            <div class="notes-text">${esc(r.notes || '-')}</div>
+            ${flagsHtml}
+            ${addendumHtml}
+          </div>
+        </div>
+      </td>
+    </tr>`;
+
+  return mainRow + detailRow;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// REJECTED PANEL
+// ═══════════════════════════════════════════════════════════════
+function toggleRejPanel() {
+  rejOpen = !rejOpen;
+  const content  = document.getElementById('rej-content');
+  const filterBar = document.getElementById('rej-filter-bar');
+  const icon      = document.getElementById('rej-toggle-icon');
+  const header    = document.getElementById('rej-header');
+
+  if (rejOpen) {
+    content.style.display = 'block';
+    filterBar.classList.add('visible');
+    icon.style.transform = 'rotate(90deg)';
+    header.classList.add('open');
+    // Show noise pill now that panel is open
+    document.getElementById('rej-t2-pill').style.display = '';
+    if (!rejRendered) {
+      renderRejectedSection();
+      rejRendered = true;
+    }
+  } else {
+    content.style.display = 'none';
+    filterBar.classList.remove('visible');
+    icon.style.transform = '';
+    header.classList.remove('open');
+    document.getElementById('rej-t2-pill').style.display = 'none';
+  }
+}
+
+function onRejFilterChange() {
+  rejState.tier = document.querySelector('input[name="tier"]:checked').value;
+  renderRejectedSection();
+}
+
+function handleRejTab(tab) {
+  rejState.tab = tab;
+  document.getElementById('rej-tab-pm').classList.toggle('active',  tab === 'pm');
+  document.getElementById('rej-tab-pjm').classList.toggle('active', tab === 'pjm');
+  renderRejectedSection();
+}
+
+function getFilteredRejRoles() {
+  const activeTracks = new Set(
+    ['REM','IRL','ADD'].filter(t => document.getElementById('filt-' + t)?.checked)
+  );
+  let roles = allRejRoles.filter(r =>
+    activeTracks.has(r.track) &&
+    (sourceTab === 'ats' ? isAtsRole(r) : !isAtsRole(r))
+  );
+  if (rejState.tier !== 'all') {
+    roles = roles.filter(r => r.rejection_tier === rejState.tier);
+  }
+  return roles;
+}
+
+function renderRejectedSection() {
+  const allFiltered = getFilteredRejRoles();
+  const pmRoles     = allFiltered.filter(r => r.role_cat !== 'PjM');
+  const pjmRoles    = allFiltered.filter(r => r.role_cat === 'PjM');
+  const activeRoles = rejState.tab === 'pm' ? pmRoles : pjmRoles;
+  const sorted      = sortRejRoles(activeRoles);
+
+  // Update tab counts
+  document.getElementById('rej-pm-count').textContent  = pmRoles.length;
+  document.getElementById('rej-pjm-count').textContent = pjmRoles.length;
+
+  const content = document.getElementById('rej-content');
+  if (!activeRoles.length) {
+    content.innerHTML = `<div class="no-results">No screened-out roles match current filters.</div>`;
+    return;
+  }
+  content.innerHTML = buildRejTableHtml(sorted);
+}
+
+// ── Rejected table columns ────────────────────────────────────
+const REJ_COLS = [
+  { key: 'expand',   label: '',         sortable: false, style: 'width:24px' },
+  { key: 'company',  label: 'Company',  sortable: true },
+  { key: 'title',    label: 'Role',     sortable: true },
+  { key: 'track',    label: 'Track',    sortable: false },
+  { key: 'type',     label: 'Type',     sortable: false },
+  { key: 'posted',   label: 'Posted',   sortable: true },
+  { key: 'salary',   label: 'Salary',   sortable: false },
+  { key: 'category', label: 'Reason',   sortable: true },
+  { key: 'apply',    label: 'Apply',    sortable: false },
+];
+
+function buildRejTableHtml(roles) {
+  const colspan = REJ_COLS.length;
+  const theadCells = REJ_COLS.map(col => {
+    if (!col.sortable) return `<th${col.style ? ` style="${col.style}"` : ''}>${col.label}</th>`;
+    const isActive = rejState.sortCol === col.key;
+    const icon = isActive ? (rejState.sortDir === 'asc' ? '↑' : '↓') : '↕';
+    return `<th class="sortable${isActive ? ' sort-active' : ''}" onclick="handleRejSort('${col.key}')">
+      ${col.label}<span class="sort-icon">${icon}</span>
+    </th>`;
+  }).join('');
+  const rows = roles.map(r => rejRowPair(r, colspan)).join('');
+  return `<div class="table-scroll"><table><thead><tr>${theadCells}</tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function rejRowPair(r, colspan) {
+  const id = 'r-' + (r.id || Math.random().toString(36).slice(2));
+
+  const typeMap = {
+    'remote':    { label: 'Remote',    cls: 'type-remote' },
+    'hybrid':    { label: 'Hybrid',    cls: 'type-hybrid' },
+    'in-person': { label: 'In-Person', cls: 'type-inperson' },
+  };
+  const wt = typeMap[r.work_type_bucket] || { label: r.work_type_bucket || '-', cls: '' };
+
+  const ageTier    = r.age_tier || 'Unknown';
+  const postedHtml = `<span class="posted-${ageTier}">${esc(r.posted || 'Unknown')}</span>`;
+  const trackBadge = r.track ? `<span class="badge track-${r.track}">${r.track}</span>` : '-';
+
+  const cat      = r.reason_cat || 'other';
+  const catLabel = REJ_CAT_LABELS[cat] || cat;
+  const catBadge = `<span class="reason-cat rcat-${cat}">${catLabel}</span>`;
+
+  const mainRow = `
+    <tr class="job-row" onclick="toggleRej('${id}')">
+      <td><span class="expand-icon" id="icon-${id}">▶</span></td>
+      <td>
+        <div class="company-name">${esc(r.company)}</div>
+        <div class="location-text">${esc(r.location || '')}</div>
+      </td>
+      <td><div class="role-title">${esc(r.role_title)}</div></td>
+      <td>${trackBadge}</td>
+      <td><span class="badge ${wt.cls}">${wt.label}</span></td>
+      <td>${postedHtml}</td>
+      <td><span class="salary${r.salary_unknown ? ' unknown' : ''}">${esc(r.salary || 'Not listed')}</span></td>
+      <td>${catBadge}</td>
+      <td>${r.apply_url
+        ? `<a class="apply-link" href="${r.apply_url}" target="_blank" onclick="event.stopPropagation()">Apply →</a>`
+        : '<span style="color:var(--muted);font-size:12px">-</span>'}
+      </td>
+    </tr>`;
+
+  const detailRow = `
+    <tr class="detail-row" id="detail-${id}">
+      <td colspan="${colspan}" class="rej-detail-cell">
+        <div class="rej-reason-full">✗ ${esc(r.reason || '-')}</div>
+        ${r.notes ? `<div class="rej-notes">${esc(r.notes)}</div>` : ''}
+      </td>
+    </tr>`;
+
+  return mainRow + detailRow;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SORT
+// ═══════════════════════════════════════════════════════════════
+function sortRoles(roles, col, dir) {
+  return [...roles].sort((a, b) => {
+    let va, vb;
+    switch (col) {
+      case 'company': va = a.company.toLowerCase();    vb = b.company.toLowerCase();    break;
+      case 'title':   va = a.role_title.toLowerCase(); vb = b.role_title.toLowerCase(); break;
+      case 'posted':  va = a.posted_days ?? 999;       vb = b.posted_days ?? 999;       break;
+      case 'grade':   va = GRADE_ORDER[a.grade] ?? 99; vb = GRADE_ORDER[b.grade] ?? 99; break;
+      case 'score':   va = -(a.weighted_score ?? 0);   vb = -(b.weighted_score ?? 0);   break;
+      default:        va = 0; vb = 0;
+    }
+    if (va < vb) return dir === 'asc' ? -1 : 1;
+    if (va > vb) return dir === 'asc' ?  1 : -1;
+    const ga = GRADE_ORDER[a.grade] ?? 99, gb = GRADE_ORDER[b.grade] ?? 99;
+    if (ga !== gb) return ga - gb;
+    return a.company.toLowerCase() < b.company.toLowerCase() ? -1 : 1;
+  });
+}
+
+function sortRejRoles(roles) {
+  const col = rejState.sortCol, dir = rejState.sortDir;
+  return [...roles].sort((a, b) => {
+    let va, vb;
+    switch (col) {
+      case 'company':  va = a.company.toLowerCase();    vb = b.company.toLowerCase();    break;
+      case 'title':    va = a.role_title.toLowerCase(); vb = b.role_title.toLowerCase(); break;
+      case 'posted':   va = a.posted_days ?? 999;       vb = b.posted_days ?? 999;       break;
+      case 'category': va = REJ_CAT_ORDER.indexOf(a.reason_cat ?? 'other');
+                       vb = REJ_CAT_ORDER.indexOf(b.reason_cat ?? 'other');
+                       if (va < 0) va = 99; if (vb < 0) vb = 99;              break;
+      default:         va = 0; vb = 0;
+    }
+    if (va < vb) return dir === 'asc' ? -1 : 1;
+    if (va > vb) return dir === 'asc' ?  1 : -1;
+    return a.company.toLowerCase() < b.company.toLowerCase() ? -1 : 1;
+  });
+}
+
+function handleRejSort(col) {
+  if (rejState.sortCol === col) {
+    rejState.sortDir = rejState.sortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    rejState.sortCol = col;
+    rejState.sortDir = 'asc';
+  }
+  renderRejectedSection();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// EVENT HANDLERS
+// ═══════════════════════════════════════════════════════════════
+function handleSort(sectionId, col) {
+  const ss = sectionState[sectionId];
+  if (ss.sortCol === col) {
+    ss.sortDir = ss.sortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    ss.sortCol = col;
+    ss.sortDir = 'asc';
+  }
+  const buckets = { remote: 'remote', hybrid: 'hybrid', inperson: 'in-person' };
+  renderSection(sectionId, buckets[sectionId]);
+}
+
+function handleTab(sectionId, tab) {
+  sectionState[sectionId].tab = tab;
+  const buckets = { remote: 'remote', hybrid: 'hybrid', inperson: 'in-person' };
+  renderSection(sectionId, buckets[sectionId]);
+}
+
+function toggle(id) {
+  const detailRow = document.getElementById('detail-' + id);
+  if (!detailRow) return;
+  const jobRow = detailRow.previousElementSibling;
+  const icon   = document.getElementById('icon-' + id);
+  const open   = detailRow.classList.contains('visible');
+  if (open) {
+    detailRow.classList.remove('visible');
+    if (jobRow) jobRow.classList.remove('expanded');
+    if (icon)   icon.style.transform = '';
+  } else {
+    detailRow.classList.add('visible');
+    if (jobRow) jobRow.classList.add('expanded');
+    if (icon)   icon.style.transform = 'rotate(90deg)';
+  }
+}
+
+function toggleRej(id) {
+  const detailRow = document.getElementById('detail-' + id);
+  if (!detailRow) return;
+  const jobRow = detailRow.previousElementSibling;
+  const icon   = document.getElementById('icon-' + id);
+  const open   = detailRow.classList.contains('visible');
+  if (open) {
+    detailRow.classList.remove('visible');
+    if (jobRow) jobRow.classList.remove('expanded');
+    if (icon)   icon.style.transform = '';
+  } else {
+    detailRow.classList.add('visible');
+    if (jobRow) jobRow.classList.add('expanded');
+    if (icon)   icon.style.transform = 'rotate(90deg)';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════
+function chip(label, val, color) {
+  const valHtml = color
+    ? `<span class="val" style="color:${color}">${val}</span>`
+    : `<span class="val">${val}</span>`;
+  return `<div class="stat-chip">${label} ${valHtml}</div>`;
+}
+
+function esc(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+</script>
+</body>
+</html>

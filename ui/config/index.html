@@ -1,0 +1,2006 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jobsift Config</title>
+<style>
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --card: #20232f; --border: #2e3147;
+    --accent: #6c7aff; --accent-hover: #8491ff; --danger: #ff5e5e;
+    --text: #e2e4f0; --muted: #7a7e99; --green: #4caf7d; --yellow: #f0b429;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; font-size: 14px; }
+
+  /* ── Layout ── */
+  header { background: var(--surface); border-bottom: 1px solid var(--border);
+           padding: 14px 24px; display: flex; align-items: center; gap: 16px; position: sticky; top: 0; z-index: 100; }
+  header h1 { font-size: 16px; font-weight: 600; flex: 1; }
+  #save-btn { background: var(--accent); color: #fff; border: none; padding: 8px 20px;
+              border-radius: 6px; font-size: 14px; cursor: pointer; font-weight: 600; }
+  #save-btn:hover { background: var(--accent-hover); }
+  #status { font-size: 13px; color: var(--muted); min-width: 160px; text-align: right; }
+  #status.ok  { color: var(--green); }
+  #status.err { color: var(--danger); }
+
+  nav { background: var(--surface); border-bottom: 1px solid var(--border);
+        display: flex; gap: 2px; padding: 0 24px; }
+  nav button { background: none; border: none; color: var(--muted); padding: 10px 16px;
+               cursor: pointer; font-size: 13px; border-bottom: 2px solid transparent; }
+  nav button.active { color: var(--text); border-bottom-color: var(--accent); }
+  nav button:hover  { color: var(--text); }
+
+  .tab { display: none; padding: 28px 24px; max-width: 1100px; margin: 0 auto; }
+  .tab.active { display: block; }
+
+  /* ── Shared form primitives ── */
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  input[type=text], input[type=number], select {
+    width: 100%; background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); border-radius: 5px; padding: 7px 10px; font-size: 13px; }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  .field { margin-bottom: 14px; }
+  .field-row { display: grid; gap: 14px; margin-bottom: 14px; }
+  .field-row > div { display: flex; flex-direction: column; }
+  .field-row > div input[type=text],
+  .field-row > div input[type=number],
+  .field-row > div select,
+  .field-row > div .wt-selector,
+  .field-row > div .salary-note-box { margin-top: auto; }
+  .col2 { grid-template-columns: 1fr 1fr; }
+  .col3 { grid-template-columns: 1fr 1fr 1fr; }
+  .col4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+  h2 { font-size: 15px; margin-bottom: 18px; color: var(--text); }
+  h3 { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase;
+       letter-spacing: .05em; margin: 24px 0 14px; }
+
+  /* ── Work type pills ── */
+  .wt-selector { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+  .wt-pill { background: var(--bg); border: 1px solid var(--border); border-radius: 20px;
+             color: var(--muted); padding: 5px 16px; font-size: 13px; cursor: pointer;
+             transition: all .15s; }
+  .wt-pill:hover { border-color: var(--accent); color: var(--accent); }
+  .wt-pill.selected { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  /* ── Salary note box ── */
+  .salary-note-box { background: var(--bg); border: 1px solid var(--border); border-radius: 5px;
+                     padding: 8px 10px; font-size: 12px; color: var(--muted); line-height: 1.55; }
+
+  /* ── Track cards ── */
+  #tracks-list { display: flex; flex-direction: column; gap: 12px; }
+  .track-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .track-card.dragging { opacity: .5; }
+  .track-card.drag-over { border-color: var(--accent); }
+  .track-header {
+    display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+    cursor: pointer; user-select: none; background: var(--surface);
+  }
+  .drag-handle { color: var(--muted); font-size: 18px; cursor: grab; padding: 0 4px; }
+  .track-priority { background: var(--accent); color: #fff; font-size: 11px; font-weight: 700;
+                    border-radius: 12px; padding: 2px 8px; }
+  .track-title { flex: 1; font-weight: 600; font-size: 14px; }
+  .track-subtitle { font-size: 12px; color: var(--muted); }
+  .track-chevron { color: var(--muted); transition: transform .2s; }
+  .track-card.open .track-chevron { transform: rotate(90deg); }
+  .track-body { padding: 20px; display: none; border-top: 1px solid var(--border); }
+  .track-card.open .track-body { display: block; }
+  .track-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+  .btn-danger { background: none; border: 1px solid var(--danger); color: var(--danger);
+                padding: 5px 14px; border-radius: 5px; font-size: 12px; cursor: pointer; }
+  .btn-danger:hover { background: var(--danger); color: #fff; }
+  .btn-secondary { background: none; border: 1px solid var(--border); color: var(--text);
+                   padding: 5px 14px; border-radius: 5px; font-size: 12px; cursor: pointer; }
+  .btn-secondary:hover { border-color: var(--accent); color: var(--accent); }
+  #add-track-btn { margin-top: 14px; background: none; border: 1px dashed var(--border);
+                   color: var(--muted); width: 100%; padding: 12px; border-radius: 8px;
+                   cursor: pointer; font-size: 13px; }
+  #add-track-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ── Tag inputs ── */
+  .tag-wrap { background: var(--bg); border: 1px solid var(--border); border-radius: 5px;
+              min-height: 40px; padding: 6px 8px; display: flex; flex-wrap: wrap; gap: 6px; cursor: text; }
+  .tag-wrap:focus-within { border-color: var(--accent); }
+  .tag { background: var(--surface); border: 1px solid var(--border); border-radius: 4px;
+         padding: 2px 8px; font-size: 12px; display: flex; align-items: center; gap: 6px; }
+  .tag-x { cursor: pointer; color: var(--muted); font-size: 14px; line-height: 1; }
+  .tag-x:hover { color: var(--danger); }
+  .tag-input { background: none; border: none; outline: none; color: var(--text);
+               font-size: 13px; min-width: 140px; flex: 1; padding: 2px 4px; }
+
+  /* ── KV inputs (ATS boards) ── */
+  .kv-col-header { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px;
+                   margin-bottom: 4px; padding: 0 2px; }
+  .kv-col-header span { font-size: 11px; color: var(--muted); text-transform: uppercase;
+                        letter-spacing: .04em; font-weight: 600; }
+  .kv-col-header span:last-child { width: 26px; }
+  .kv-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .kv-row input { margin: 0; }
+  .kv-del { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1; }
+  .kv-del:hover { color: var(--danger); }
+  .btn-add-row { background: none; border: 1px dashed var(--border); color: var(--muted);
+                 padding: 5px 14px; border-radius: 5px; font-size: 12px; cursor: pointer; margin-top: 6px; }
+  .btn-add-row:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ── Workday Direct cards ── */
+  .wd-card { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 14px; margin-bottom: 10px; }
+  .wd-card .col3 { margin-bottom: 0; }
+
+  /* ── Checkbox ── */
+  .checkbox-field { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .checkbox-field input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
+  .checkbox-field label { margin: 0; color: var(--text); font-size: 13px; cursor: pointer; }
+
+  /* ── State dropdown placeholder styling ── */
+  select[data-f="target_state"] option[value=""] { color: var(--muted); }
+
+  /* ── Code snippets in help text ── */
+  code { background: var(--card); border: 1px solid var(--border); border-radius: 3px;
+         padding: 1px 5px; font-family: monospace; font-size: 12px; color: var(--accent); }
+
+  /* ── Divider ── */
+  hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
+
+  /* ── Toast ── */
+  #toast { position: fixed; bottom: 24px; right: 24px; background: var(--green);
+           color: #fff; padding: 10px 20px; border-radius: 8px; font-size: 13px;
+           display: none; z-index: 999; }
+  #toast.err { background: var(--danger); }
+
+  /* ── Setup Wizard ── */
+  #wizard { display:none; max-width:720px; margin:60px auto; padding:0 24px 60px; font-size:15px; }
+  .wiz-progress { display:flex; align-items:center; gap:10px; margin-bottom:36px; }
+  .wiz-dot { width:10px; height:10px; border-radius:50%; background:var(--border); transition:background .2s; flex-shrink:0; }
+  .wiz-dot.active { background:var(--accent); }
+  .wiz-dot.done   { background:var(--green); }
+  .wiz-step-label { font-size:13px; color:var(--muted); }
+  .wiz-card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:36px 40px; display:flex; flex-direction:column; height:640px; overflow:hidden; }
+  .wiz-step { display:flex; flex-direction:column; flex:1; overflow-y:auto; }
+  .wiz-card h2 { font-size:22px; margin-bottom:10px; }
+  .wiz-card .wiz-sub { color:var(--muted); font-size:14px; line-height:1.6; margin-bottom:28px; }
+  .wiz-nav { display:flex; align-items:center; gap:10px; margin-top:auto; padding-top:28px; position:sticky; bottom:0; background:var(--surface); }
+  .wiz-nav .spacer { flex:1; }
+  .btn-wiz-primary { background:var(--accent); color:#fff; border:none; padding:10px 26px;
+                     border-radius:6px; font-size:15px; font-weight:600; cursor:pointer; }
+  .btn-wiz-primary:hover { background:var(--accent-hover); }
+  .btn-wiz-secondary { background:none; border:1px solid var(--border); color:var(--text);
+                       padding:10px 22px; border-radius:6px; font-size:15px; cursor:pointer; }
+  .btn-wiz-secondary:hover { border-color:var(--accent); color:var(--accent); }
+  .btn-wiz-skip { background:none; border:none; color:var(--muted); font-size:13px;
+                  cursor:pointer; text-decoration:underline; padding:4px; }
+  .btn-wiz-skip:hover { color:var(--text); }
+
+  /* ── Panes (visual grouping within track cards) ── */
+  .pane { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 14px 16px; margin-bottom: 14px; }
+  .pane-title { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 12px; }
+  details > summary { list-style: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  #wizard label { font-size:13px; }
+  .wiz-kv-row { display:grid; grid-template-columns:100px 1fr 1fr auto; gap:8px; align-items:center; margin-bottom:8px; }
+  .wiz-kv-row input { margin:0; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>&#9881; Jobsift Config</h1>
+  <span id="status">Loading&hellip;</span>
+  <button id="save-btn" onclick="saveConfig()">Save</button>
+</header>
+
+<nav>
+  <button class="active" onclick="showTab('tracks',this)">Tracks</button>
+  <button onclick="showTab('scoring',this)">Scoring</button>
+  <button onclick="showTab('blocklist',this)">Block List</button>
+  <button onclick="showTab('sources',this)">Sources</button>
+  <button onclick="showTab('settings',this)">Settings</button>
+</nav>
+
+<!-- ═══════════════════════ TRACKS ═══════════════════════ -->
+<div id="tab-tracks" class="tab active">
+  <h2>Tracks <span style="color:var(--muted);font-size:12px;font-weight:400">(drag to reorder priority)</span></h2>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:20px">When a role qualifies for multiple tracks, the highest-priority track wins. Each track is a saved search: it defines which titles qualify and what salary and work arrangement it requires.</p>
+  <div id="tracks-list"></div>
+  <button id="add-track-btn" onclick="addTrack()">+ Add Track</button>
+
+  <details style="margin-top:24px">
+    <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding:8px 0;user-select:none;display:flex;align-items:center;gap:8px">
+      &#9658; Global Title Filters <span style="font-weight:400;text-transform:none;letter-spacing:0;font-size:12px">(advanced: apply across all tracks before any scoring)</span>
+    </summary>
+    <div style="margin-top:12px;padding:16px 20px;background:var(--card);border:1px solid var(--border);border-radius:8px">
+      <p style="color:var(--muted);font-size:12px;margin-bottom:16px">Most users should leave these empty and rely on per-track title filters (inside each track card above) instead. Global filters are useful only if you want a hard rule that applies regardless of which track matches.</p>
+      <div class="field">
+        <label>Required Title Terms <span style="color:var(--muted);font-weight:400">(title must match at least one, or leave empty to allow all)</span></label>
+        <div id="tag-title_require" class="tag-section"></div>
+      </div>
+      <div class="field" style="margin-top:14px">
+        <label>Blocked Title Terms <span style="color:var(--muted);font-weight:400">(drop immediately if title matches any of these)</span></label>
+        <div id="tag-title_block" class="tag-section"></div>
+      </div>
+    </div>
+  </details>
+</div>
+
+<!-- ═══════════════════════ SCORING TIERS ════════════════════ -->
+<div id="tab-scoring" class="tab">
+  <h2>Scoring</h2>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:20px">
+    Each dimension scores a listing 1&ndash;5. The score is multiplied by the per-track weight you set in the Tracks tab.
+    Add keywords to each score level; the pipeline tests them top-to-bottom and stops at the first match.
+    Anything that matches nothing lands at Score 1.
+  </p>
+
+  <h3>D1: Title Quality</h3>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:10px">Matched against the <strong>job title</strong>. Score 5 = ideal target title. Score 2 = adjacent or stretch.</p>
+  <div style="margin-bottom:24px">
+      <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:10px">
+        <div style="flex:0 0 68px;padding-top:6px;text-align:right">
+          <span style="font-weight:700;font-size:13px">Score 5</span>
+        </div>
+        <div class="tag-section" id="d1-score-5" style="flex:1"></div>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:10px">
+        <div style="flex:0 0 68px;padding-top:6px;text-align:right">
+          <span style="font-weight:700;font-size:13px">Score 4</span>
+        </div>
+        <div class="tag-section" id="d1-score-4" style="flex:1"></div>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:10px">
+        <div style="flex:0 0 68px;padding-top:6px;text-align:right">
+          <span style="font-weight:700;font-size:13px">Score 3</span>
+        </div>
+        <div class="tag-section" id="d1-score-3" style="flex:1"></div>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:10px">
+        <div style="flex:0 0 68px;padding-top:6px;text-align:right">
+          <span style="font-weight:700;font-size:13px">Score 2</span>
+        </div>
+        <div class="tag-section" id="d1-score-2" style="flex:1"></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:4px;opacity:0.55">
+        <div style="flex:0 0 68px;text-align:right">
+          <span style="font-weight:700;font-size:13px">Score 1</span>
+        </div>
+        <span style="font-size:12px;font-style:italic">Catch-all: anything not matched above</span>
+      </div>
+  </div>
+  <h3>D2: Scope &amp; Complexity</h3>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:10px">Matched against <strong>responsibilities + title</strong>. Score 5 = broad organizational scope and ownership. Score 2 = narrow or supporting scope.</p>
+  <div style="margin-bottom:24px">
+      <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:10px">
+        <div style="flex:0 0 68px;padding-top:6px;text-align:right">
+          <span style="font-weight:700;font-size:13px">Score 5</span>
+        </div>
+        <div class="tag-section" id="d2-score-5" style="flex:1"></div>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:10px">
+        <div style="flex:0 0 68px;padding-top:6px;text-align:right">
+          <span style="font-weight:700;font-size:13px">Score 4</span>
+        </div>
+        <div class="tag-section" id="d2-score-4" style="flex:1"></div>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:10px">
+        <div style="flex:0 0 68px;padding-top:6px;text-align:right">
+          <span style="font-weight:700;font-size:13px">Score 3</span>
+        </div>
+        <div class="tag-section" id="d2-score-3" style="flex:1"></div>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:10px">
+        <div style="flex:0 0 68px;padding-top:6px;text-align:right">
+          <span style="font-weight:700;font-size:13px">Score 2</span>
+        </div>
+        <div class="tag-section" id="d2-score-2" style="flex:1"></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:4px;opacity:0.55">
+        <div style="flex:0 0 68px;text-align:right">
+          <span style="font-weight:700;font-size:13px">Score 1</span>
+        </div>
+        <span style="font-size:12px;font-style:italic">Catch-all: anything not matched above</span>
+      </div>
+  </div>
+  <h3>D3: Domain Fit</h3>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:10px">
+    Matched against the <strong>full job text</strong>. Keywords here represent industries, domains, or technologies that signal how relevant the role is to your background.
+    Score 5 = strongest domain match &bull; Score 2 = weak domain signal &bull; Score 1 (catch-all) = no domain keywords found.
+  </p>
+  <div style="margin-bottom:24px">
+    <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:10px">
+      <div style="flex:0 0 68px;padding-top:6px;text-align:right"><span style="font-weight:700;font-size:13px">Score 5</span></div>
+      <div class="tag-section" id="d3-tier5" style="flex:1"></div>
+    </div>
+    <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:10px">
+      <div style="flex:0 0 68px;padding-top:6px;text-align:right"><span style="font-weight:700;font-size:13px">Score 4</span></div>
+      <div class="tag-section" id="d3-tier4" style="flex:1"></div>
+    </div>
+    <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:10px">
+      <div style="flex:0 0 68px;padding-top:6px;text-align:right"><span style="font-weight:700;font-size:13px">Score 3</span></div>
+      <div class="tag-section" id="d3-tier3" style="flex:1"></div>
+    </div>
+    <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:10px">
+      <div style="flex:0 0 68px;padding-top:6px;text-align:right"><span style="font-weight:700;font-size:13px">Score 2</span></div>
+      <div class="tag-section" id="d3-tier2" style="flex:1"></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;margin-top:4px;opacity:0.55">
+      <div style="flex:0 0 68px;text-align:right"><span style="font-weight:700;font-size:13px">Score 1</span></div>
+      <span style="font-size:12px;font-style:italic">Catch-all: no domain keywords matched</span>
+    </div>
+  </div>
+  <h3>D4: Qualifications Match</h3>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:10px">Matched against the <strong>requirements section</strong>. Score 5 = strong credential match. Score 2 = weak or mismatched requirements.</p>
+  <div style="margin-bottom:24px">
+      <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:10px">
+        <div style="flex:0 0 68px;padding-top:6px;text-align:right">
+          <span style="font-weight:700;font-size:13px">Score 5</span>
+        </div>
+        <div class="tag-section" id="d4-score-5" style="flex:1"></div>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:10px">
+        <div style="flex:0 0 68px;padding-top:6px;text-align:right">
+          <span style="font-weight:700;font-size:13px">Score 4</span>
+        </div>
+        <div class="tag-section" id="d4-score-4" style="flex:1"></div>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:10px">
+        <div style="flex:0 0 68px;padding-top:6px;text-align:right">
+          <span style="font-weight:700;font-size:13px">Score 3</span>
+        </div>
+        <div class="tag-section" id="d4-score-3" style="flex:1"></div>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:10px">
+        <div style="flex:0 0 68px;padding-top:6px;text-align:right">
+          <span style="font-weight:700;font-size:13px">Score 2</span>
+        </div>
+        <div class="tag-section" id="d4-score-2" style="flex:1"></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:4px;opacity:0.55">
+        <div style="flex:0 0 68px;text-align:right">
+          <span style="font-weight:700;font-size:13px">Score 1</span>
+        </div>
+        <span style="font-size:12px;font-style:italic">Catch-all: anything not matched above</span>
+      </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ BLOCK LIST ════════════════════ -->
+<div id="tab-blocklist" class="tab">
+  <h2>Block List</h2>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:20px">Hard-reject rules applied before scoring. A posting matching any rule here is dropped immediately, regardless of track.</p>
+
+  <h3>Jobright Card Skip</h3>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:10px">Matched against the Jobright card summary <em>before</em> the scraper opens the full posting. Skips roles that are clearly wrong based on the preview alone (faster and cheaper than opening each one).</p>
+  <div id="tag-card_exclude" class="tag-section"></div>
+
+  <hr>
+
+  <h3>Rejection Thresholds</h3>
+  <div class="field-row col4">
+    <div class="field">
+      <label>Max Experience Years (reject if required years reach this)</label>
+      <input type="number" id="rf_max_experience_years" min="1" max="30">
+    </div>
+    <div class="field">
+      <label>Max Travel % (reject if travel % exceeds this)</label>
+      <input type="number" id="rf_max_travel_pct" min="0" max="100">
+    </div>
+  </div>
+
+  <h3>Blocked Industries</h3>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:8px">Any listing whose full text matches one of these phrases is hard-rejected.</p>
+  <div id="tag-blocked_industries" class="tag-section"></div>
+
+  <h3>Domain Experience Industries</h3>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:8px">Reject if the listing requires experience in any of these domains (e.g. &ldquo;healthcare&rdquo;, &ldquo;fintech&rdquo;).</p>
+  <div id="tag-domain_experience_industries" class="tag-section"></div>
+
+  <h3>Description Blockers</h3>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:8px">Hard-reject any listing whose requirements section contains one of these phrases. Use this for language that disqualifies you regardless of role type.</p>
+  <div id="tag-description_blockers" class="tag-section"></div>
+
+  <hr>
+
+  <h3>Blocked Companies</h3>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:10px">Roles at these companies are hard-rejected across <em>all</em> tracks. For track-specific exclusions, use the Excluded Companies field inside each Track card.</p>
+  <div id="tag-blocked_companies" class="tag-section"></div>
+
+  <h3>Blocked Agencies</h3>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:10px">Staffing and recruiting agencies. Roles from these firms are flagged for manual review, since they often post on behalf of direct employers and may not represent the actual hiring company.</p>
+  <div id="tag-blocked_agencies" class="tag-section"></div>
+  <button class="btn-add-row" style="margin-top:6px" onclick="addDefaultAgencies()">+ Add Known Bloat Posters</button>
+</div>
+
+<!-- ═══════════════════════ SOURCES ══════════════════════ -->
+<div id="tab-sources" class="tab">
+  <h2>Sources</h2>
+
+  <h3>Target Companies</h3>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:10px">Roles at these companies earn a &ldquo;Target company&rdquo; flag and benefit from the prestige wiggle-room buffer on salary checks. You can also set per-track target companies inside each Track card.</p>
+  <div id="tag-target_companies" class="tag-section"></div>
+
+  <h3>Allowed Agencies</h3>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:10px">Approved agencies whose roles pass without requiring a direct ATS link (e.g. executive search firms, trusted boutique recruiters).</p>
+  <div id="tag-premium_agencies" class="tag-section"></div>
+
+  <hr>
+
+  <h3>Jobright Searches</h3>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:6px">
+    <strong style="color:var(--text)">Searches are how the scraper fetches jobs from Jobright.ai.</strong>
+    Each search runs a query using a job category label and a work model (remote or location-based).
+    You need at least one search for the scraper to run.
+  </p>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:16px">
+    <strong>Job Category</strong> is Jobright&rsquo;s internal name for the role type. It must match the category label shown in Jobright&rsquo;s own search filters.
+  </p>
+  <div id="jobright-passes-list"></div>
+  <button class="btn-add-row" onclick="addJobrightPass()" style="margin-top:8px">+ Add Search</button>
+
+  <hr style="margin-top:28px">
+
+  <h3>Greenhouse</h3>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:12px">
+    Enter each company&rsquo;s Greenhouse board slug (the identifier at the end of the job board URL).<br>
+    Example: <code>https://job-boards.greenhouse.io/<strong>stripe</strong></code> &rarr; slug is <strong>stripe</strong>.<br>
+    Paste a full Greenhouse URL into the slug field and the slug will be extracted automatically.
+  </p>
+  <div class="kv-col-header"><span>Company Name</span><span>Greenhouse Slug</span><span></span></div>
+  <div id="kv-greenhouse"></div>
+  <button class="btn-add-row" onclick="addKvRow('greenhouse')">+ Add</button>
+
+  <h3>Lever</h3>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:12px">
+    Example: <code>https://jobs.lever.co/<strong>palantir</strong></code> &rarr; slug is <strong>palantir</strong>. Paste a full URL and the slug will be extracted automatically.
+  </p>
+  <div class="kv-col-header"><span>Company Name</span><span>Lever Slug</span><span></span></div>
+  <div id="kv-lever"></div>
+  <button class="btn-add-row" onclick="addKvRow('lever')">+ Add</button>
+
+  <h3>Ashby</h3>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:12px">
+    Example: <code>https://jobs.ashbyhq.com/<strong>openai</strong></code> &rarr; slug is <strong>openai</strong>. Paste a full URL and the slug will be extracted automatically.
+  </p>
+  <div class="kv-col-header"><span>Company Name</span><span>Ashby Slug</span><span></span></div>
+  <div id="kv-ashby"></div>
+  <button class="btn-add-row" onclick="addKvRow('ashby')">+ Add</button>
+
+  <h3>Workday Search Terms</h3>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:8px">One search term per line. The Workday scraper runs a separate keyword search for each term against every board.</p>
+  <textarea id="workday_search_terms" rows="4" style="width:100%;max-width:480px;font-family:monospace;font-size:13px"></textarea>
+
+  <h3>Workday Direct <span style="color:var(--muted);font-weight:400;font-size:12px">(confirmed API endpoint)</span></h3>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:12px">
+    For companies whose Workday API details you have confirmed. All four values come from the company&rsquo;s Workday careers URL.<br>
+    Example: <code>https://<strong>crowdstrike</strong>.wd5.myworkdayjobs.com/<strong>crowdstrikecareers</strong></code><br>
+    &rarr; Base URL: <code>https://crowdstrike.wd5.myworkdayjobs.com</code> &bull; Tenant: <code>crowdstrike</code> &bull; Site: <code>crowdstrikecareers</code>
+  </p>
+  <div id="wd-direct-list"></div>
+  <button class="btn-add-row" onclick="addWdDirect()">+ Add Workday Direct</button>
+
+  <h3>Workday Companies <span style="color:var(--muted);font-weight:400;font-size:12px">(discovery mode)</span></h3>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:12px">
+    Add companies where you have the careers page URL but haven&rsquo;t confirmed the API details yet. The scraper will attempt to derive the Workday endpoint automatically. This is less reliable than Workday Direct. Once details are confirmed, move the entry to Workday Direct above.
+  </p>
+  <div class="kv-col-header"><span>Company Name</span><span>Careers Page URL</span><span></span></div>
+  <div id="kv-workday_companies"></div>
+  <button class="btn-add-row" onclick="addKvRow('workday_companies')">+ Add</button>
+
+  <hr style="margin-top:28px">
+
+  <details style="margin-top:4px">
+    <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding:6px 0;user-select:none;display:flex;align-items:center;gap:8px">
+      &#9658; Advanced Routing <span style="font-weight:400;text-transform:none;letter-spacing:0;font-size:12px">(copy rules and per-search track assignment)</span>
+    </summary>
+    <div style="margin-top:14px">
+      <h3>Generate Copies</h3>
+      <p style="color:var(--muted);font-size:12px;margin-bottom:10px">
+        After scraping, the pipeline can clone every result from one search and re-score it under a different search so a single listing is evaluated against multiple tracks.
+        Add a rule for each pair you want duplicated.
+      </p>
+      <div id="copy-rules-list"></div>
+      <button class="btn-add-row" onclick="addCopyRule()" style="margin-top:6px">+ Add Copy Rule</button>
+
+      <h3 style="margin-top:28px">Track Routing Rules</h3>
+      <p style="color:var(--muted);font-size:12px;margin-bottom:10px">
+        Controls which scoring track each result is assigned to. Rules are evaluated top-to-bottom; the first match wins.
+        Add conditions to narrow a rule; leave conditions blank to match everything.
+      </p>
+      <div id="routing-rules-list"></div>
+      <button class="btn-add-row" onclick="addRoutingRule()" style="margin-top:6px">+ Add Rule</button>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:14px;padding:10px 14px;background:var(--card);border:1px solid var(--border);border-radius:6px">
+        <label style="font-weight:600;white-space:nowrap">Default track</label>
+        <select id="routing_default_track" style="background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px"></select>
+        <span style="color:var(--muted);font-size:12px">(fallback when no rule matches)</span>
+      </div>
+    </div>
+  </details>
+</div>
+
+<!-- ═══════════════════════ SETTINGS ════════════════════ -->
+<div id="tab-settings" class="tab">
+  <h2>Settings</h2>
+
+  <h3>Run Output Label</h3>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:8px">A short label stamped into the scored output file so you can identify which configuration produced it.</p>
+  <div class="field">
+    <label>Label</label>
+    <input type="text" id="pipeline_search_term" style="max-width:380px" placeholder="e.g. Sandwich Artist Job Scrape January 1">
+  </div>
+
+  <h3>Scraper Tuning</h3>
+  <div class="field-row col4">
+    <div class="field">
+      <label>Min Match % (stop collecting cards below this)</label>
+      <input type="number" id="min_match_pct" min="0" max="100">
+    </div>
+    <div class="field">
+      <label>Scroll Pause (ms between scrolls)</label>
+      <input type="number" id="scroll_pause_ms" min="0">
+    </div>
+    <div class="field">
+      <label>Slow Mo (ms between browser actions)</label>
+      <input type="number" id="slow_mo" min="0">
+    </div>
+    <div class="field">
+      <label>Detail Workers (concurrent fetches)</label>
+      <input type="number" id="detail_workers" min="1" max="16">
+    </div>
+  </div>
+
+  <hr style="margin-top:28px">
+
+  <details style="margin-top:4px">
+    <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;padding:6px 0;user-select:none">
+      Role Categories <span style="font-weight:400;text-transform:none;letter-spacing:0;font-size:12px">(groupings shown in the dashboard and eval output)</span>
+    </summary>
+    <div style="margin-top:14px">
+      <p style="color:var(--muted);font-size:12px;margin-bottom:16px">Categories are evaluated top-to-bottom; the first whose keywords appear in the job title wins. Categories with no keywords act as a catch-all and are <strong>automatically pinned to the bottom</strong> on save regardless of drag position.</p>
+      <div id="rolecats-list"></div>
+      <button class="btn-add-row" onclick="addRoleCat()" style="margin-top:8px">+ Add Category</button>
+    </div>
+  </details>
+</div>
+<!-- ═══════════════════════ SETUP WIZARD ════════════════════ -->
+<div id="wizard">
+  <div class="wiz-progress" id="wiz-progress-dots"></div>
+  <div class="wiz-card">
+
+    <!-- Step 1: Welcome -->
+    <div class="wiz-step" id="wiz-s1">
+      <h2>&#127919; Welcome to Jobsift</h2>
+      <div class="wiz-sub">
+        This tool searches Jobright.ai and direct company careers pages, filters roles against
+        your criteria, and scores what&rsquo;s left so you can focus on the best matches.<br><br>
+        This quick setup takes about <strong>5 minutes</strong>. Every setting can be
+        refined anytime in the full config editor.<br><br>
+        <strong>Before you begin:</strong><br>
+        <strong>1.</strong> <strong>A Chromium-based browser is required.</strong> The Jobright
+        scraper automates a browser session to collect results. Microsoft Edge (pre-installed on
+        Windows) works out of the box. Google Chrome also works.<br>
+        <strong>2.</strong> <strong>A Jobright.ai account with a completed profile.</strong>
+        Jobsift reads match scores that Jobright generates from your profile. Make sure your
+        Jobright profile is filled out. Uploading your resume is the quickest way to populate it.
+      </div>
+      <div class="wiz-nav">
+        <div class="spacer"></div>
+        <button class="btn-wiz-skip" onclick="wizSkip()">Skip (configure manually)</button>
+        <button class="btn-wiz-primary" onclick="wizGo(2)">Get Started &rarr;</button>
+      </div>
+    </div>
+
+    <!-- Step 2: Title filters -->
+    <div class="wiz-step" id="wiz-s2" style="display:none">
+      <h2>&#128269; What roles are you looking for?</h2>
+      <div class="wiz-sub">
+        These title terms become the first filter for your first track. The filter checks only the job title: a posting must match at least one required term to qualify; any title matching a blocked term is dropped immediately.<br><br>
+        Title-only filtering is broad. Adding &ldquo;Engineer&rdquo; will match software, civil, and chemical engineers equally. The next two steps address that with industry fit scoring and description-level blockers. For now, add the title terms that describe your target roles.<br><br>
+        Type a term and press Enter to add it.
+      </div>
+      <div class="field">
+        <label>Required Title Terms</label>
+        <div id="wiz-tag-require" class="tag-section"></div>
+      </div>
+      <div class="field" style="margin-top:18px">
+        <label>Blocked Title Terms</label>
+        <div id="wiz-tag-block" class="tag-section"></div>
+      </div>
+      <div class="wiz-nav">
+        <button class="btn-wiz-secondary" onclick="wizGo(1)">&larr; Back</button>
+        <div class="spacer"></div>
+        <button class="btn-wiz-skip" onclick="wizSkip()">Skip wizard</button>
+        <button class="btn-wiz-primary" onclick="wizGo(3)">Next &rarr;</button>
+      </div>
+    </div>
+
+    <!-- Step 3: First track -->
+    <div class="wiz-step" id="wiz-s3" style="display:none">
+      <h2>&#127919; Your First Track</h2>
+      <div class="wiz-sub">
+        Think of a <strong>track</strong> as a saved search with a scoring bar attached. It defines the work arrangement and the minimum salary that makes a role worth your time. The title terms you set in the previous step are already assigned to this track.<br><br>
+        Example: a Copywriter might set up two tracks: <em>Remote ($90K+)</em> for fully remote roles anywhere in the US, and <em>Los Angeles Hybrid ($110K+)</em> for local roles worth commuting to. Both tracks evaluate the same postings; a role passes if it clears either bar.<br><br>
+        Set up your first track below. You can duplicate and tweak it in the full editor to add more.
+      </div>
+      <div class="field">
+        <label>Salary Floor ($/year)</label>
+        <input type="number" id="wiz-t-salary" placeholder="e.g. 75000" min="0" step="5000">
+      </div>
+      <div class="field">
+        <label>Work Types</label>
+        <div class="wt-selector" id="wiz-wt-selector"></div>
+      </div>
+      <div class="field-row col2" style="margin-top:18px">
+        <div class="field">
+          <label>City <span style="color:var(--muted);font-weight:400">(for onsite/hybrid or state-locked roles, optional)</span></label>
+          <input type="text" id="wiz-t-city" placeholder="e.g. Los Angeles">
+        </div>
+        <div class="field">
+          <label>State</label>
+          <select id="wiz-t-state" onchange="this.style.color=this.value?'var(--text)':'var(--muted)'"></select>
+        </div>
+      </div>
+      <div class="wiz-nav">
+        <button class="btn-wiz-secondary" onclick="wizGo(2)">&larr; Back</button>
+        <div class="spacer"></div>
+        <button class="btn-wiz-skip" onclick="wizSkip()">Skip wizard</button>
+        <button class="btn-wiz-primary" onclick="wizGo(4)">Next &rarr;</button>
+      </div>
+    </div>
+
+    <!-- Step 4: Industry Fit (Domain Scoring) -->
+    <div class="wiz-step" id="wiz-s4" style="display:none">
+      <h2>&#127891; Industry Fit</h2>
+      <div class="wiz-sub">
+        Title filters catch the right <em>roles</em>; domain scoring catches the right <em>companies</em>. A scraper searching for &ldquo;Engineer&rdquo; returns software engineers, civil engineers, aerospace contractors, and chemical plant roles with identical title matches.<br><br>
+        Domain scoring adds a bonus when a company or posting signals it operates in your target industry. <strong>Tier 5</strong> is ideal fit (e.g. a named cybersecurity vendor); <strong>Tier 4</strong> is strong fit (e.g. &ldquo;cybersecurity&rdquo;, &ldquo;infosec&rdquo;, &ldquo;zero trust&rdquo;). These keywords are matched against the company name and job description.<br><br>
+        Leave both lists empty if your industry is unambiguous. If your title is shared across sectors, add terms here to surface the right ones.<br><br>
+        You can tune scoring thresholds and add Tier 3/2 bands in the full editor after setup.
+      </div>
+      <div class="field">
+        <label>Tier 5: Ideal Industry Signals <span style="color:var(--muted);font-weight:400">(specific named companies, products, or platforms)</span></label>
+        <div id="wiz-tag-d3tier5" class="tag-section"></div>
+      </div>
+      <div class="field" style="margin-top:18px">
+        <label>Tier 4: Strong Industry Signals <span style="color:var(--muted);font-weight:400">(broad sector or genre keywords)</span></label>
+        <div id="wiz-tag-d3tier4" class="tag-section"></div>
+      </div>
+      <div class="wiz-nav">
+        <button class="btn-wiz-secondary" onclick="wizGo(3)">&larr; Back</button>
+        <div class="spacer"></div>
+        <button class="btn-wiz-skip" onclick="wizSkip()">Skip wizard</button>
+        <button class="btn-wiz-primary" onclick="wizGo(5)">Next &rarr;</button>
+      </div>
+    </div>
+
+    <!-- Step 5: Where to search -->
+    <div class="wiz-step" id="wiz-s5" style="display:none">
+      <h2>&#128269; Where to Search</h2>
+      <div class="wiz-sub">
+        The scraper has two sources: <strong>Jobright.ai</strong> and direct ATS scraping.<br><br>
+        Jobright searches by category label. The terms below are pre-filled from your required title terms (Step 2), and each one becomes a separate Jobright search pass. Edit any label if Jobright uses a different name in their search filters. <strong>Direct career pages</strong> (optional, below) let you scrape specific companies&rsquo; ATS boards directly and can catch postings that aggregators miss.
+      </div>
+      <div class="field">
+        <label>Jobright Search Terms <span style="color:var(--muted);font-weight:400">(pre-filled from your title terms; edit to match Jobright&rsquo;s filter labels exactly)</span></label>
+        <div id="wiz-tag-jbtaxonomies" class="tag-section"></div>
+        <div style="color:var(--muted);font-size:11px;margin-top:4px">Each term creates a separate Jobright search pass. You can add or remove passes in the Pipeline tab after setup.</div>
+      </div>
+      <div class="field" style="margin-top:4px">
+        <label>Jobright Search Mode</label>
+        <select id="wiz-jb-model" style="max-width:280px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:7px 10px;font-size:13px">
+          <option value="remote">Remote only</option>
+          <option value="local">Location-based (on-site &amp; hybrid)</option>
+          <option value="both">Both (adds two search passes)</option>
+        </select>
+      </div>
+      <h3 style="margin-top:24px">Direct Company Career Pages <span style="color:var(--muted);font-weight:400;font-size:12px;text-transform:none;letter-spacing:0">(optional)</span></h3>
+      <p style="color:var(--muted);font-size:12px;margin-bottom:10px">For companies with Greenhouse, Lever, or Ashby hiring pages, enter the board slug from their careers URL (e.g. <code>https://boards.greenhouse.io/<strong>stripe</strong></code> &rarr; slug is <strong>stripe</strong>). You can add more in the full config editor.</p>
+      <div style="margin-bottom:6px">
+        <div style="display:grid;grid-template-columns:100px 1fr 1fr auto;gap:8px;margin-bottom:4px;padding:0 2px">
+          <span style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em">Platform</span>
+          <span style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em">Company Name</span>
+          <span style="font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em">Slug / URL</span>
+          <span style="width:26px"></span>
+        </div>
+        <div id="wiz-ats-rows"></div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
+        <button class="btn-add-row" onclick="wizAddAts('greenhouse')">+ Greenhouse</button>
+        <button class="btn-add-row" onclick="wizAddAts('lever')">+ Lever</button>
+        <button class="btn-add-row" onclick="wizAddAts('ashby')">+ Ashby</button>
+      </div>
+      <div class="wiz-nav">
+        <button class="btn-wiz-secondary" onclick="wizGo(4)">&larr; Back</button>
+        <div class="spacer"></div>
+        <button class="btn-wiz-skip" onclick="wizSkip()">Skip wizard</button>
+        <button class="btn-wiz-primary" onclick="wizGo(6)">Next &rarr;</button>
+      </div>
+    </div>
+
+    <!-- Step 6: Block list -->
+    <div class="wiz-step" id="wiz-s6" style="display:none">
+      <h2>&#128683; What to Block</h2>
+      <div class="wiz-sub">Hard-reject rules that fire before scoring. Description blockers are especially useful when your title terms are broad: for example, a scientist targeting biotech roles might block &ldquo;defense&rdquo;, &ldquo;oil&rdquo;, and &ldquo;petrochemical&rdquo; to drop off-sector postings.</div>
+      <div class="field-row col2" style="margin-bottom:18px">
+        <div class="field">
+          <label>Max Experience Years <span style="color:var(--muted);font-weight:400">(reject if required years reach this)</span></label>
+          <input type="number" id="wiz-max-exp" min="1" max="30" value="10">
+        </div>
+        <div class="field">
+          <label>Max Travel % (reject if posting exceeds this)</label>
+          <input type="number" id="wiz-max-travel" min="0" max="100" value="25">
+        </div>
+      </div>
+      <div class="field">
+        <label>Blocked Industries (keyword match against full posting, hard-reject)</label>
+        <div id="wiz-tag-industries" class="tag-section"></div>
+      </div>
+      <div class="field" style="margin-top:18px">
+        <label>Blocked Companies (hard-reject across all tracks)</label>
+        <div id="wiz-tag-companies" class="tag-section"></div>
+      </div>
+      <div class="field" style="margin-top:18px">
+        <label>Description Blockers <span style="color:var(--muted);font-weight:400">(keyword match against full posting text, hard-reject)</span></label>
+        <div id="wiz-tag-descblockers" class="tag-section"></div>
+        <div style="color:var(--muted);font-size:11px;margin-top:4px">Example: a Designer targeting software products might add &ldquo;fashion&rdquo;, &ldquo;apparel&rdquo;, and &ldquo;retail&rdquo; here to drop clothing brand and style agency postings.</div>
+      </div>
+      <div class="wiz-nav">
+        <button class="btn-wiz-secondary" onclick="wizGo(5)">&larr; Back</button>
+        <div class="spacer"></div>
+        <button class="btn-wiz-skip" onclick="wizSkip()">Skip wizard</button>
+        <button class="btn-wiz-primary" onclick="wizGo(7)">Next &rarr;</button>
+      </div>
+    </div>
+
+    <!-- Step 7: You're Set Up -->
+    <div class="wiz-step" id="wiz-s7" style="display:none">
+      <h2>&#127881; You&rsquo;re Set Up</h2>
+      <div class="wiz-sub">
+        Nice work. Here&rsquo;s what you just configured:
+        <ul style="margin:10px 0 0 16px;line-height:1.8">
+          <li>Title filters (required and blocked terms)</li>
+          <li>Your first search track (work type, salary floor, location)</li>
+          <li>Industry fit scoring (Tier 5 and Tier 4 domain signals)</li>
+          <li>Jobright search source and optional direct career pages</li>
+          <li>Hard-reject blockers (industries, companies, description keywords)</li>
+        </ul>
+      </div>
+      <div style="background:var(--row-hover);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin:18px 0;font-size:13px;color:var(--muted)">
+        <strong style="color:var(--text)">What&rsquo;s still worth configuring in the full editor:</strong>
+        <ul style="margin:8px 0 0 16px;line-height:1.8">
+          <li><strong>Scoring thresholds:</strong> Grade A/B/C cutoffs and salary score tiers are set to defaults. Tune them in the Tracks tab to match your market.</li>
+          <li><strong>Additional tracks:</strong> open the Tracks tab, click Duplicate on your first track, then adjust the copy for a different work arrangement or salary bar.</li>
+          <li><strong>More ATS boards:</strong> add Greenhouse, Lever, or Ashby slugs for target companies in the Sources tab.</li>
+          <li><strong>Routing rules:</strong> in Sources under Advanced Routing, you can assign specific tracks to specific Jobright searches for fine-grained control.</li>
+          <li><strong>Scoring tiers D2/D3:</strong> mid-tier domain signals and seniority scoring for finer-grained ranking, in the Scoring tab.</li>
+        </ul>
+      </div>
+      <div class="wiz-nav">
+        <button class="btn-wiz-secondary" onclick="wizGo(6)">&larr; Back</button>
+        <div class="spacer"></div>
+        <button class="btn-wiz-primary" onclick="wizFinish()">Save &amp; Open Full Config &rarr;</button>
+      </div>
+    </div>
+
+  </div><!-- /.wiz-card -->
+</div><!-- /#wizard -->
+
+<div id="toast"></div>
+
+<script>
+let CONFIG = null;
+
+const US_STATES = [
+  '','AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN',
+  'IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH',
+  'NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT',
+  'VT','VA','WA','WV','WI','WY','DC'
+];
+function stateOptions(selected) {
+  return US_STATES.map(s =>
+    `<option value="${s}"${s === selected ? ' selected' : ''}>${s || '(select state)'}</option>`
+  ).join('');
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+window.electronAPI.loadConfig()
+  .then(data => { CONFIG = data; render(); setStatus('Loaded', 'ok'); initWizard(); })
+  .catch(e  => setStatus('Load failed: ' + e.message, 'err'));
+
+// ── Tab navigation ────────────────────────────────────────────────────────────
+function showTab(id, btn) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + id).classList.add('active');
+  btn.classList.add('active');
+}
+
+// ── Status / Toast ────────────────────────────────────────────────────────────
+function setStatus(msg, cls) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = cls || '';
+}
+function toast(msg, isErr) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = isErr ? 'err' : '';
+  el.style.display = 'block';
+  setTimeout(() => el.style.display = 'none', 2500);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  RENDER
+// ══════════════════════════════════════════════════════════════════════════════
+function render() {
+  renderTracks();
+  renderCompanies();
+  renderTitles();
+  renderAts();
+  renderSettings();
+  renderPipeline();
+  renderScoring();
+  renderRoleCats();
+  renderRejection();
+  renderJobright();
+}
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+function renderSettings() {
+  const s = CONFIG.settings;
+  document.getElementById('pipeline_search_term').value = (CONFIG.pipeline || {}).search_term || '';
+  document.getElementById('workday_search_terms').value = ((CONFIG.ats_boards || {}).workday_search_terms || []).join('\n');
+  document.getElementById('min_match_pct').value   = s.min_match_pct;
+  document.getElementById('scroll_pause_ms').value = s.scroll_pause_ms;
+  document.getElementById('slow_mo').value         = s.slow_mo;
+  document.getElementById('detail_workers').value  = s.detail_workers;
+}
+
+// ── Tag sections ──────────────────────────────────────────────────────────────
+const TAG_MAP = {
+  target_companies:    () => CONFIG.company_lists.target_companies,
+  blocked_companies:   () => CONFIG.company_lists.blocked_companies,
+  blocked_agencies:  () => CONFIG.company_lists.blocked_agencies,
+  premium_agencies:    () => CONFIG.company_lists.premium_agencies,
+  title_require:  () => CONFIG.title_filters.title_require,
+  title_block:    () => CONFIG.title_filters.title_block,
+  card_exclude:               () => CONFIG.title_filters.card_exclude,
+  blocked_industries:         () => { CONFIG.rejection_filters = CONFIG.rejection_filters||{}; return CONFIG.rejection_filters.blocked_industries = CONFIG.rejection_filters.blocked_industries||[]; },
+  domain_experience_industries:() => { CONFIG.rejection_filters = CONFIG.rejection_filters||{}; return CONFIG.rejection_filters.domain_experience_industries = CONFIG.rejection_filters.domain_experience_industries||[]; },
+  description_blockers:       () => { CONFIG.rejection_filters = CONFIG.rejection_filters||{}; return CONFIG.rejection_filters.description_blockers = CONFIG.rejection_filters.description_blockers||[]; },
+};
+
+function renderCompanies() {
+  ['target_companies', 'blocked_companies', 'blocked_agencies', 'premium_agencies']
+    .forEach(k => buildTagWidget(document.getElementById('tag-' + k), TAG_MAP[k]()));
+}
+function renderTitles() {
+  ['title_require', 'title_block', 'card_exclude']
+    .forEach(k => buildTagWidget(document.getElementById('tag-' + k), TAG_MAP[k]()));
+}
+function renderTagSection(key) {
+  buildTagWidget(document.getElementById('tag-' + key), TAG_MAP[key]());
+}
+
+const DEFAULT_BLOCKED_AGENCIES = [
+  'Akkodis', 'Talentify', 'Insight Global', 'Robert Half', 'Randstad',
+  'TEKsystems', 'Kforce', 'Adecco', 'ManpowerGroup', 'Modis', 'CyberCoders',
+  'Experis', 'Jobgether', 'RemoteHunter', 'Crossing Hurdles', 'VBeyond',
+  'BayOne', 'Flexton', 'Intelliswift', 'IntePros', 'Acceler8 Talent',
+  'Albion Blake', 'Ampstek', 'SPECTRAFORCE', 'Procom', 'Bayforce',
+  'Kastech', 'Motion Recruitment'
+];
+
+function addDefaultAgencies() {
+  if (!CONFIG.company_lists) CONFIG.company_lists = {};
+  if (!CONFIG.company_lists.blocked_agencies) CONFIG.company_lists.blocked_agencies = [];
+  const arr = CONFIG.company_lists.blocked_agencies;
+  let added = 0;
+  DEFAULT_BLOCKED_AGENCIES.forEach(a => {
+    if (!arr.includes(a)) { arr.push(a); added++; }
+  });
+  buildTagWidget(document.getElementById('tag-blocked_agencies'), arr);
+  toast(added > 0 ? added + ' agencies added' : 'All common agencies already in list');
+}
+
+function buildTagWidget(container, arr) {
+  container.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.className = 'tag-wrap';
+
+  const addTag = (val) => {
+    if (!val.trim()) return;
+    if (arr.includes(val.trim())) return;
+    arr.push(val.trim());
+    renderTag(val.trim());
+  };
+
+  const renderTag = (val) => {
+    const tag = document.createElement('span');
+    tag.className = 'tag';
+    tag.innerHTML = `<span>${escHtml(val)}</span><span class="tag-x" title="Remove">&times;</span>`;
+    tag.querySelector('.tag-x').onclick = () => {
+      const idx = arr.indexOf(val);
+      if (idx > -1) arr.splice(idx, 1);
+      tag.remove();
+    };
+    wrap.insertBefore(tag, inp);
+  };
+
+  const inp = document.createElement('input');
+  inp.className = 'tag-input';
+  inp.placeholder = 'Add item, press Enter…';
+  inp.onkeydown = (e) => {
+    if (e.key === 'Enter' || e.key === ',') {
+      e.preventDefault();
+      addTag(inp.value);
+      inp.value = '';
+    } else if (e.key === 'Backspace' && !inp.value && arr.length) {
+      arr.pop();
+      wrap.querySelector('.tag:last-of-type')?.remove();
+    }
+  };
+  inp.onblur = () => { if (inp.value.trim()) { addTag(inp.value); inp.value = ''; } };
+
+  wrap.appendChild(inp);
+  wrap.onclick = () => inp.focus();
+  arr.forEach(v => renderTag(v));
+  container.appendChild(wrap);
+}
+
+// ── ATS Boards ────────────────────────────────────────────────────────────────
+function renderAts() {
+  ['greenhouse', 'lever', 'ashby'].forEach(k => {
+    const container = document.getElementById('kv-' + k);
+    container.innerHTML = '';
+    Object.entries(CONFIG.ats_boards[k]).forEach(([name, slug]) => addKvRowWith(k, name, slug));
+  });
+  const wc = document.getElementById('kv-workday_companies');
+  wc.innerHTML = '';
+  Object.entries(CONFIG.ats_boards.workday_companies).forEach(([name, url]) => addKvRowWith('workday_companies', name, url));
+  renderWdDirect();
+}
+
+const SLUG_PATTERNS = {
+  greenhouse: /greenhouse\.io\/([^/?&#\s]+)/,
+  lever:      /lever\.co\/([^/?&#\s]+)/,
+  ashby:      /ashbyhq\.com\/([^/?&#\s]+)/,
+};
+const SLUG_LABELS = {
+  greenhouse:        'Slug (or paste a Greenhouse URL)',
+  lever:             'Slug (or paste a Lever URL)',
+  ashby:             'Slug (or paste an Ashby URL)',
+  workday_companies: 'Careers page URL',
+};
+
+function addKvRow(board) { addKvRowWith(board, '', ''); }
+function addKvRowWith(board, name, val) {
+  const container = document.getElementById('kv-' + board);
+  const row = document.createElement('div');
+  row.className = 'kv-row';
+  row.innerHTML = `
+    <input type="text" class="kv-name" placeholder="Company name" value="${escHtml(name)}">
+    <input type="text" class="kv-val"  placeholder="${SLUG_LABELS[board] || 'Value'}" value="${escHtml(val)}">
+    <button class="kv-del" title="Remove">&times;</button>`;
+  row.querySelector('.kv-del').onclick = () => row.remove();
+  const pat = SLUG_PATTERNS[board];
+  if (pat) {
+    row.querySelector('.kv-val').addEventListener('blur', function() {
+      const v = this.value.trim();
+      if (v.startsWith('http')) {
+        const m = v.match(pat);
+        if (m) { this.value = m[1]; toast('Slug extracted ✓'); }
+      }
+    });
+  }
+  container.appendChild(row);
+}
+
+function renderWdDirect() {
+  const container = document.getElementById('wd-direct-list');
+  container.innerHTML = '';
+  Object.entries(CONFIG.ats_boards.workday_direct).forEach(([name, vals]) => {
+    addWdDirectWith(name, vals.base_url, vals.tenant, vals.site);
+  });
+}
+function addWdDirect() { addWdDirectWith('', '', '', ''); }
+function addWdDirectWith(name, base_url, tenant, site) {
+  const container = document.getElementById('wd-direct-list');
+  const card = document.createElement('div');
+  card.className = 'wd-card';
+  card.innerHTML = `
+    <div class="field-row col2" style="margin-bottom:10px">
+      <div><label>Company Name</label>
+           <input type="text" class="wd-name" value="${escHtml(name)}" placeholder="e.g. CrowdStrike"></div>
+      <div><label>Base URL (full Workday domain)</label>
+           <input type="text" class="wd-base_url" value="${escHtml(base_url)}" placeholder="https://company.wd5.myworkdayjobs.com"></div>
+    </div>
+    <div class="field-row col3">
+      <div><label>Tenant (subdomain prefix before .wd5)</label>
+           <input type="text" class="wd-tenant" value="${escHtml(tenant)}" placeholder="company"></div>
+      <div><label>Site (path ID after .com/ in the careers URL)</label>
+           <input type="text" class="wd-site" value="${escHtml(site)}" placeholder="CompanyCareers"></div>
+      <div style="display:flex;align-items:flex-end">
+           <button class="btn-danger" onclick="this.closest('.wd-card').remove()">Remove</button></div>
+    </div>`;
+  container.appendChild(card);
+}
+
+// ── Tracks ────────────────────────────────────────────────────────────────────
+function renderTracks() {
+  const list = document.getElementById('tracks-list');
+  list.innerHTML = '';
+  CONFIG.tracks.forEach((t, i) => list.appendChild(buildTrackCard(t, i)));
+  initDragDrop();
+}
+
+function buildWorkTypeSelector(container, track) {
+  ['Remote', 'Onsite', 'Hybrid'].forEach(opt => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = opt;
+    btn.className = 'wt-pill' + ((track.work_types || []).includes(opt) ? ' selected' : '');
+    btn.onclick = () => {
+      if (!track.work_types) track.work_types = [];
+      if (track.work_types.includes(opt)) {
+        track.work_types = track.work_types.filter(w => w !== opt);
+        btn.classList.remove('selected');
+      } else {
+        track.work_types.push(opt);
+        btn.classList.add('selected');
+      }
+      refreshTrackHeader(btn.closest('.track-card'), track);
+    };
+    container.appendChild(btn);
+  });
+}
+
+function buildTrackCard(t, idx) {
+  const card = document.createElement('div');
+  card.className = 'track-card';
+  card.dataset.key = t.key;
+
+  const wt = (t.work_types || []).join(', ');
+  const locParts = (t.target_location || '').split(',').map(s => s.trim());
+  const locCity  = locParts[0] || '';
+  const locState = locParts[1] || '';
+
+  card.innerHTML = `
+    <div class="track-header" onclick="toggleTrack(this.closest('.track-card'))">
+      <span class="drag-handle" draggable="false">&#8942;</span>
+      <span class="track-priority">#${idx+1}</span>
+      <span class="track-title">${escHtml(t.label || t.key)}</span>
+      <span class="track-subtitle">${escHtml(wt)} &middot; floor $${((t.salary_floor||0)/1000).toFixed(0)}K</span>
+      <span class="track-chevron">&#9658;</span>
+    </div>
+    <div class="track-body">
+
+      <!-- What to Search For -->
+      <div class="pane">
+        <div class="pane-title">What to Search For</div>
+        <div class="field">
+          <label>Required Title Terms <span style="color:var(--muted);font-weight:400">(title must match at least one; leave empty to allow all titles on this track)</span></label>
+          <div class="tag-section" data-taglist="title_require"></div>
+        </div>
+        <div class="field" style="margin-top:10px">
+          <label>Blocked Title Terms <span style="color:var(--muted);font-weight:400">(drop titles matching these on this track)</span></label>
+          <div class="tag-section" data-taglist="title_block"></div>
+        </div>
+      </div>
+
+      <!-- Work Arrangement -->
+      <div class="pane">
+        <div class="pane-title">Work Arrangement</div>
+        <div class="field-row col2" style="margin-bottom:14px">
+          <div class="field"><label>Label (display name)</label>
+            <input type="text" data-f="label" value="${escHtml(t.label)}"></div>
+          <div class="field"><label>Work Types</label>
+            <div class="wt-selector"></div></div>
+        </div>
+        <div class="field-row col3">
+          <div class="field"><label>Salary Floor (hard minimum salary, $/year)</label>
+            <input type="number" data-f="salary_floor" value="${t.salary_floor ?? ''}"></div>
+          <div class="field"><label>Wiggle Room ($ buffer for target companies)</label>
+            <input type="number" data-f="wiggle_room" value="${t.wiggle_room ?? ''}"></div>
+          <div class="field"><label>Auto-reject if posted max is below this (optional)</label>
+            <input type="number" data-f="reject_if_max_below" value="${t.reject_if_max_below ?? ''}"></div>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin:-4px 0 12px">
+          Salary scores below apply only to postings that pass the floor above.
+        </div>
+        <div class="field-row col3">
+          <div class="field"><label>Score 5 threshold ($)</label>
+            <input type="number" data-f="salary_score_5" value="${t.salary_score_5 ?? ''}"></div>
+          <div class="field"><label>Score 4 threshold ($)</label>
+            <input type="number" data-f="salary_score_4" value="${t.salary_score_4 ?? ''}"></div>
+          <div class="field"><label>Score 3 threshold ($ optional)</label>
+            <input type="number" data-f="salary_score_3" value="${t.salary_score_3 ?? ''}"></div>
+        </div>
+        <p style="font-size:12px;color:var(--muted);margin:4px 0 10px">Target Location: if remote, enter your current location for state-locked roles (Remote&ndash;CA, Remote&ndash;NY, etc.)</p>
+        <div class="field-row col3">
+          <div class="field"><label>City</label>
+            <input type="text" data-f="target_city" value="${escHtml(locCity)}" placeholder="e.g. Los Angeles"></div>
+          <div class="field"><label>State</label>
+            <select data-f="target_state" style="color:${locState ? 'var(--text)' : 'var(--muted)'}" onchange="this.style.color=this.value?'var(--text)':'var(--muted)'">${stateOptions(locState)}</select></div>
+          <div class="field"><label>Radius (miles, optional)</label>
+            <input type="number" data-f="target_radius_mi" value="${t.target_radius_mi ?? ''}"></div>
+        </div>
+      </div>
+
+      <!-- Grading -->
+      <div class="pane">
+        <div class="pane-title">Grading <span style="color:var(--muted);font-weight:400;font-size:10px;text-transform:none;letter-spacing:0">(max score 25)</span></div>
+        <div class="field-row col3">
+          <div class="field"><label>Grade A minimum score</label>
+            <input type="number" data-f="grade_a" value="${t.grade_a ?? ''}"></div>
+          <div class="field"><label>Grade B minimum score</label>
+            <input type="number" data-f="grade_b" value="${t.grade_b ?? ''}"></div>
+          <div class="field"><label>Grade C minimum score</label>
+            <input type="number" data-f="grade_c" value="${t.grade_c ?? ''}"></div>
+        </div>
+        <div class="field-row col3">
+          <div class="field"><label>Min Domain Score (D3): hard-reject below this (optional)</label>
+            <input type="number" data-f="min_domain_score" value="${t.min_domain_score ?? ''}"></div>
+          <div class="field"><label>Domain Cap At (D3): cap grade to C if D3 &le; this (optional)</label>
+            <input type="number" data-f="domain_cap_at" value="${t.domain_cap_at ?? ''}"></div>
+          <div class="field"><label>Security clearance behavior</label>
+            <select data-f="clearance_behavior">
+              <option value="reject" ${(t.clearance_behavior||'reject')==='reject'?'selected':''}>Reject</option>
+              <option value="flag"   ${(t.clearance_behavior||'reject')==='flag'  ?'selected':''}>Flag (warn but keep)</option>
+            </select></div>
+        </div>
+        <div class="checkbox-field">
+          <input type="checkbox" data-f="reject_if_no_salary" id="nosalary-${escHtml(t.key)}" ${t.reject_if_no_salary ? 'checked' : ''}>
+          <label for="nosalary-${escHtml(t.key)}">Reject if no salary posted</label>
+        </div>
+      </div>
+
+      <!-- Score Weights (collapsed) -->
+      <details style="margin-bottom:14px">
+        <summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;padding:6px 0;user-select:none;display:flex;align-items:center;gap:6px">
+          &#9658; Score Weights <span style="font-weight:400;text-transform:none;letter-spacing:0;font-size:11px">(per-dimension multipliers, default 1.0)</span>
+        </summary>
+        <div class="pane" style="margin-top:8px">
+          <div class="field-row col3">
+            <div class="field"><label>D1: Title / Seniority</label>
+              <input type="number" step="0.25" min="0" data-f="sw_d1" value="${(t.score_weights||{}).d1 ?? 1}"></div>
+            <div class="field"><label>D2: Scope / Complexity</label>
+              <input type="number" step="0.25" min="0" data-f="sw_d2" value="${(t.score_weights||{}).d2 ?? 1}"></div>
+            <div class="field"><label>D3: Domain Fit</label>
+              <input type="number" step="0.25" min="0" data-f="sw_d3" value="${(t.score_weights||{}).d3 ?? 1}"></div>
+          </div>
+          <div class="field-row col3">
+            <div class="field"><label>D4: Qualifications Match</label>
+              <input type="number" step="0.25" min="0" data-f="sw_d4" value="${(t.score_weights||{}).d4 ?? 1}"></div>
+            <div class="field"><label>D5: Salary Fit</label>
+              <input type="number" step="0.25" min="0" data-f="sw_d5" value="${(t.score_weights||{}).d5 ?? 1}"></div>
+            <div class="field"></div>
+          </div>
+        </div>
+      </details>
+
+      <!-- Exclusions and Targeting -->
+      <div class="pane">
+        <div class="pane-title">Exclusions &amp; Targeting</div>
+        <div class="field">
+          <label>Level Cap <span style="color:var(--muted);font-weight:400">(cap grade at B if title contains any of these, e.g. Senior, Staff)</span></label>
+          <div class="tag-section" data-taglist="level_cap_b"></div>
+        </div>
+        <div class="field" style="margin-top:10px">
+          <label>Excluded Companies <span style="color:var(--muted);font-weight:400">(hard-reject on this track only; global Blocked Companies in Block List apply to all tracks)</span></label>
+          <div class="tag-section" data-taglist="excluded_companies"></div>
+        </div>
+        <div class="field" style="margin-top:10px">
+          <label>Target Companies <span style="color:var(--muted);font-weight:400">(flagged as preferred on this track; receive salary wiggle-room)</span></label>
+          <div class="tag-section" data-taglist="target_companies"></div>
+        </div>
+      </div>
+
+      <div class="track-actions">
+        <button class="btn-secondary track-dup-btn">Duplicate</button>
+        <button class="btn-danger track-remove-btn">Remove Track</button>
+      </div>
+    </div>`;
+
+  card.querySelector('.track-remove-btn').addEventListener('click', () => removeTrack(card.dataset.key));
+  card.querySelector('.track-dup-btn').addEventListener('click',    () => duplicateTrack(card.dataset.key));
+
+  buildWorkTypeSelector(card.querySelector('.wt-selector'), t);
+  buildTagWidget(card.querySelector('[data-taglist="level_cap_b"]'),        t.level_cap_b        || []);
+  buildTagWidget(card.querySelector('[data-taglist="excluded_companies"]'), t.excluded_companies || []);
+  buildTagWidget(card.querySelector('[data-taglist="title_block"]'),        t.title_block        || []);
+  buildTagWidget(card.querySelector('[data-taglist="title_require"]'),      t.title_require      || []);
+  buildTagWidget(card.querySelector('[data-taglist="target_companies"]'),   t.target_companies   || []);
+
+  card.querySelectorAll('input[data-f], select[data-f]').forEach(inp => {
+    inp.addEventListener('change', () => syncTrack(card));
+  });
+
+  return card;
+}
+
+function toggleTrack(card) { card.classList.toggle('open'); }
+
+function syncTrack(card) {
+  const key = card.dataset.key;
+  const t = CONFIG.tracks.find(x => x.key === key);
+  if (!t) return;
+  card.querySelectorAll('[data-f]').forEach(inp => {
+    const f = inp.dataset.f;
+    if (inp.type === 'checkbox') { t[f] = inp.checked; return; }
+    const v = inp.value.trim();
+    if (f === 'key')   { card.dataset.key = v; t.key = v; return; }
+    if (f === 'label') { t.label = v; return; }
+    if (f === 'target_city' || f === 'target_state') {
+      const city  = card.querySelector('[data-f="target_city"]')?.value.trim()  || '';
+      const state = card.querySelector('[data-f="target_state"]')?.value.trim() || '';
+      t.target_location = (city || state) ? [city, state].filter(Boolean).join(', ') : null;
+      if (state) CONFIG.user_state = state;
+      return;
+    }
+    if (f === 'clearance_behavior') { t[f] = v; return; }
+    if (f.startsWith('sw_')) {
+      if (!t.score_weights) t.score_weights = {};
+      t.score_weights[f.slice(3)] = v === '' ? 1.0 : parseFloat(v);
+      return;
+    }
+    if (['salary_floor','wiggle_room','grade_a','grade_b','grade_c',
+         'salary_score_5','salary_score_4','salary_score_3',
+         'reject_if_max_below','target_radius_mi',
+         'min_domain_score','domain_cap_at'].includes(f)) {
+      t[f] = v === '' ? null : parseInt(v, 10);
+    }
+  });
+  refreshTrackHeader(card, t);
+}
+
+function refreshTrackHeader(card, t) {
+  card.querySelector('.track-title').textContent = t.label || t.key;
+  card.querySelector('.track-subtitle').textContent =
+    (t.work_types || []).join(', ') + ' · floor $' + (((t.salary_floor || 0) / 1000).toFixed(0)) + 'K';
+}
+
+function addTrack() {
+  const newTrack = {
+    key: 'TRACK_' + Date.now(), label: 'New Track',
+    work_types: ['Remote'],
+    salary_floor: 100000, grade_a: 22, grade_b: 17, grade_c: 12,
+    salary_score_5: 120000, salary_score_4: 105000, salary_score_3: 90000,
+    target_location: null, target_radius_mi: null,
+    reject_if_max_below: null, wiggle_room: 0,
+    clearance_behavior: 'reject', level_cap_b: [],
+    reject_if_no_salary: false,
+    min_domain_score: null, domain_cap_at: null,
+    score_weights: { d1: 1.0, d2: 1.0, d3: 1.0, d4: 1.0, d5: 1.0 },
+    excluded_companies: [],
+    title_block: [],
+    title_require: [],
+    target_companies: [],
+  };
+  CONFIG.tracks.push(newTrack);
+  const list = document.getElementById('tracks-list');
+  const card = buildTrackCard(newTrack, CONFIG.tracks.length - 1);
+  card.classList.add('open');
+  list.appendChild(card);
+  initDragDrop();
+  card.scrollIntoView({ behavior: 'smooth' });
+}
+
+function removeTrack(key) {
+  if (!confirm(`Remove track "${key}"?`)) return;
+  CONFIG.tracks = CONFIG.tracks.filter(t => t.key !== key);
+  renderTracks();
+}
+
+function duplicateTrack(key) {
+  const src = CONFIG.tracks.find(t => t.key === key);
+  if (!src) return;
+  const copy = JSON.parse(JSON.stringify(src));
+  copy.key   = 'TRACK_' + Date.now();
+  copy.label = src.label + ' (copy)';
+  const srcIdx = CONFIG.tracks.indexOf(src);
+  CONFIG.tracks.splice(srcIdx + 1, 0, copy);
+  renderTracks();
+  // Open and scroll to the new copy
+  setTimeout(() => {
+    const cards = document.querySelectorAll('#tracks-list .track-card');
+    const copyCard = cards[srcIdx + 1];
+    if (copyCard) {
+      copyCard.classList.add('open');
+      copyCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, 0);
+}
+
+// ── Drag-and-drop (generic, handle-only) ─────────────────────────────────────
+// Uses a WeakSet so re-calling on the same list never double-binds.
+// Cards must have a .drag-handle child; dragging from anywhere else is blocked
+// so text/inputs inside cards remain selectable normally.
+const _dragInited = new WeakSet();
+
+function _initListDrag(list, cardSel, onDrop) {
+  let dragged = null;
+  list.querySelectorAll(cardSel).forEach(card => {
+    if (_dragInited.has(card)) return;
+    _dragInited.add(card);
+    const handle = card.querySelector('.drag-handle');
+    if (handle) {
+      handle.addEventListener('mousedown', () => { card.draggable = true; });
+      handle.addEventListener('mouseup',   () => { card.draggable = false; });
+    }
+    card.addEventListener('dragstart', () => {
+      dragged = card;
+      setTimeout(() => card.classList.add('dragging'), 0);
+    });
+    card.addEventListener('dragend', () => {
+      card.draggable = false;
+      card.classList.remove('dragging');
+      list.querySelectorAll(cardSel).forEach(cc => cc.classList.remove('drag-over'));
+      if (onDrop) onDrop(list);
+    });
+    card.addEventListener('dragover', e => {
+      e.preventDefault();
+      if (card !== dragged) {
+        card.classList.add('drag-over');
+        const rect = card.getBoundingClientRect();
+        list.insertBefore(dragged, e.clientY < rect.top + rect.height / 2 ? card : card.nextSibling);
+      }
+    });
+    card.addEventListener('dragleave', () => card.classList.remove('drag-over'));
+    card.addEventListener('drop',      () => card.classList.remove('drag-over'));
+  });
+}
+
+function initDragDrop() {
+  _initListDrag(
+    document.getElementById('tracks-list'),
+    '.track-card',
+    (list) => {
+      const keys = [...list.querySelectorAll('.track-card')].map(cc => cc.dataset.key);
+      CONFIG.tracks = keys.map(k => CONFIG.tracks.find(t => t.key === k)).filter(Boolean);
+      list.querySelectorAll('.track-card').forEach((cc, i) => {
+        cc.querySelector('.track-priority').textContent = '#' + (i + 1);
+      });
+    }
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  COLLECT CONFIG FROM DOM
+// ══════════════════════════════════════════════════════════════════════════════
+function collectConfig() {
+  document.querySelectorAll('.track-card').forEach(card => syncTrack(card));
+
+  collectPipeline();
+  collectScoring();
+  collectRoleCats();
+  collectRejection();
+  collectJobright();
+
+  CONFIG.settings.min_match_pct   = parseInt(document.getElementById('min_match_pct').value,   10);
+  CONFIG.settings.scroll_pause_ms = parseInt(document.getElementById('scroll_pause_ms').value, 10);
+  CONFIG.settings.slow_mo         = parseInt(document.getElementById('slow_mo').value,         10);
+  CONFIG.settings.detail_workers  = parseInt(document.getElementById('detail_workers').value,  10);
+
+  ['greenhouse', 'lever', 'ashby', 'workday_companies'].forEach(board => {
+    const obj = {};
+    document.querySelectorAll(`#kv-${board} .kv-row`).forEach(row => {
+      const name = row.querySelector('.kv-name').value.trim();
+      const val  = row.querySelector('.kv-val').value.trim();
+      if (name) obj[name] = val;
+    });
+    CONFIG.ats_boards[board] = obj;
+  });
+
+  const wd = {};
+  document.querySelectorAll('#wd-direct-list .wd-card').forEach(card => {
+    const name     = card.querySelector('.wd-name').value.trim();
+    const base_url = card.querySelector('.wd-base_url').value.trim();
+    const tenant   = card.querySelector('.wd-tenant').value.trim();
+    const site     = card.querySelector('.wd-site').value.trim();
+    if (name) wd[name] = { base_url, tenant, site };
+  });
+  CONFIG.ats_boards.workday_direct = wd;
+
+  return CONFIG;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SAVE
+// ══════════════════════════════════════════════════════════════════════════════
+function saveConfig() {
+  const data = collectConfig();
+  setStatus('Saving…', '');
+  window.electronAPI.saveConfig(data)
+    .then(() => { toast('Saved'); setStatus('Saved', 'ok'); })
+    .catch(e  => { toast('Save failed: ' + e.message, true); setStatus('Error', 'err'); });
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PIPELINE
+// ══════════════════════════════════════════════════════════════════════════════
+function _passOptions(selected) {
+  const passes = (CONFIG.jobright_searches || {}).passes || [];
+  return passes.map(p =>
+    `<option value="${escHtml(p.id)}"${p.id === selected ? ' selected' : ''}>${escHtml(p.label || p.id)}</option>`
+  ).join('');
+}
+function _trackOptions(selected) {
+  return (CONFIG.tracks || []).map(t =>
+    `<option value="${escHtml(t.key)}"${t.key === selected ? ' selected' : ''}>${escHtml(t.label || t.key)}</option>`
+  ).join('');
+}
+
+function renderPipeline() {
+  const pl = CONFIG.pipeline || {};
+  _renderCopyRules(pl.generate_copies || {});
+  _renderRoutingRules(pl.track_routing || []);
+}
+
+function collectPipeline() {
+  if (!CONFIG.pipeline) CONFIG.pipeline = {};
+  CONFIG.pipeline.search_term = document.getElementById('pipeline_search_term').value.trim();
+  CONFIG.ats_boards.workday_search_terms = document.getElementById('workday_search_terms').value
+    .split('\n').map(s => s.trim()).filter(s => s.length > 0);
+  CONFIG.pipeline.generate_copies = _collectCopyRules();
+  CONFIG.pipeline.track_routing   = _collectRoutingRules();
+}
+
+// ── Generate Copies ─────────────────────────────────────────────────────────
+function _copyRowHtml(src, tgt) {
+  const INP = (cls, val, tip) =>
+    `<select class="${cls}" style="background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;min-width:0;flex:1">
+       <option value="">${tip}</option>${_passOptions(val)}</select>`;
+  return `<div class="cr-row" style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+    ${INP('cr-src', src, 'source pass')}
+    <span style="color:var(--muted);white-space:nowrap">&#8594;</span>
+    ${INP('cr-tgt', tgt, 'target pass')}
+    <button onclick="this.closest('.cr-row').remove()"
+            style="background:var(--danger);color:#fff;border:none;border-radius:4px;padding:4px 8px;cursor:pointer">&#10005;</button>
+  </div>`;
+}
+function _renderCopyRules(obj) {
+  document.getElementById('copy-rules-list').innerHTML =
+    Object.entries(obj).map(([k, v]) => _copyRowHtml(k, v)).join('');
+}
+function addCopyRule() {
+  const el = document.getElementById('copy-rules-list');
+  el.insertAdjacentHTML('beforeend', _copyRowHtml('', ''));
+}
+function _collectCopyRules() {
+  const obj = {};
+  document.querySelectorAll('#copy-rules-list .cr-row').forEach(row => {
+    const src = row.querySelector('.cr-src').value;
+    const tgt = row.querySelector('.cr-tgt').value;
+    if (src && tgt) obj[src] = tgt;
+  });
+  return obj;
+}
+
+// ── Track Routing ───────────────────────────────────────────────────────────
+const _WORK_TYPES = [
+  ['', '(any work type)'],
+  ['hybrid', 'is hybrid'],
+  ['not_hybrid', 'is NOT hybrid'],
+  ['remote', 'is remote'],
+  ['onsite', 'is onsite'],
+];
+function _routingRowHtml(rule) {
+  const passOpts = `<option value="">(any pass)</option>${_passOptions(rule.pass_contains || '')}`;
+  const wtOpts = _WORK_TYPES.map(([v, l]) =>
+    `<option value="${v}"${(rule._wt||'') === v ? ' selected' : ''}>${l}</option>`
+  ).join('');
+  const rerouteOpts = `<option value="">(no re-route)</option>${_passOptions(rule.one_day_hybrid_to || '')}`;
+  const assignOpts = `<option value="">(assign track)</option>${_trackOptions(rule.assign || '')}`;
+  // encode rule._wt for display: if work_type_contains=hybrid → hybrid, if work_type_not=hybrid → not_hybrid
+  return `<div class="rr-row" style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:8px">
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+      <span class="drag-handle" style="color:var(--muted);font-size:18px;cursor:grab;padding:0 4px;flex-shrink:0">&#8942;</span>
+      <span style="color:var(--muted);font-size:12px;white-space:nowrap">If pass is</span>
+      <select class="rr-pass" style="background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 7px;min-width:0;flex:1 1 160px">${passOpts}</select>
+      <span style="color:var(--muted);font-size:12px;white-space:nowrap">and work type</span>
+      <select class="rr-wt" style="background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 7px;min-width:0;flex:1 1 140px">${wtOpts}</select>
+      <span style="color:var(--muted);font-size:12px;white-space:nowrap">re-route 1-day hybrid to</span>
+      <select class="rr-reroute" style="background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 7px;min-width:0;flex:1 1 160px">${rerouteOpts}</select>
+      <span style="color:var(--muted);font-size:12px;white-space:nowrap">&#8594; assign</span>
+      <select class="rr-assign" style="background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 7px;min-width:0;flex:1 1 140px">${assignOpts}</select>
+      <button onclick="this.closest('.rr-row').remove()"
+              style="background:var(--danger);color:#fff;border:none;border-radius:4px;padding:4px 8px;cursor:pointer;margin-left:auto">&#10005;</button>
+    </div>
+  </div>`;
+}
+function _ruleToDisplay(rule) {
+  const r = { ...rule };
+  if (r.work_type_contains) { r._wt = r.work_type_contains; delete r.work_type_contains; }
+  else if (r.work_type_not) { r._wt = 'not_' + r.work_type_not; delete r.work_type_not; }
+  return r;
+}
+function _renderRoutingRules(rules) {
+  // separate out the default rule
+  const nonDefault = rules.filter(r => !('default' in r));
+  const defaultRule = rules.find(r => 'default' in r);
+  document.getElementById('routing-rules-list').innerHTML =
+    nonDefault.map(r => _routingRowHtml(_ruleToDisplay(r))).join('');
+  _initListDrag(document.getElementById('routing-rules-list'), '.rr-row', null);
+  const defSel = document.getElementById('routing_default_track');
+  defSel.innerHTML = `<option value="">(none)</option>${_trackOptions(defaultRule ? defaultRule.default : '')}`;
+}
+function addRoutingRule() {
+  const list = document.getElementById('routing-rules-list');
+  list.insertAdjacentHTML('beforeend', _routingRowHtml({}));
+  _initListDrag(list, '.rr-row', null);
+}
+function _collectRoutingRules() {
+  const rules = [];
+  document.querySelectorAll('#routing-rules-list .rr-row').forEach(row => {
+    const rule = {};
+    const pass   = row.querySelector('.rr-pass').value;
+    const wt     = row.querySelector('.rr-wt').value;
+    const reroute = row.querySelector('.rr-reroute').value;
+    const assign = row.querySelector('.rr-assign').value;
+    if (pass)   rule.pass_contains = pass;
+    if (wt === 'not_hybrid')     rule.work_type_not = 'hybrid';
+    else if (wt)                 rule.work_type_contains = wt;
+    if (reroute) rule.one_day_hybrid_to = reroute;
+    if (assign)  rule.assign = assign;
+    if (Object.keys(rule).length) rules.push(rule);
+  });
+  const def = document.getElementById('routing_default_track').value;
+  if (def) rules.push({ default: def });
+  return rules;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SCORING TIERS
+// ══════════════════════════════════════════════════════════════════════════════
+// Live arrays mutated in-place by tag widgets; rebuilt into tier objects on save.
+const _scoringArrays = {
+  d1: { 5: [], 4: [], 3: [], 2: [] },
+  d2: { 5: [], 4: [], 3: [], 2: [] },
+  d4: { 5: [], 4: [], 3: [], 2: [] },
+};
+const _SCORING_DIM_KEYS = { d1: 'title_tiers', d2: 'scope_tiers', d4: 'requirement_tiers' };
+// D3 domain scoring uses flat tier lists (tier5/tier4/tier3/tier2) rather than {score, keywords} objects.
+const _domainArrays = { t5: [], t4: [], t3: [], t2: [] };
+
+function _loadScoringDim(dim, tiers) {
+  for (const s of [5, 4, 3, 2]) {
+    const arr = _scoringArrays[dim][s];
+    arr.length = 0;
+    const tier = tiers.find(t => t.score === s);
+    if (tier && tier.keywords) arr.push(...tier.keywords);
+    buildTagWidget(document.getElementById(`${dim}-score-${s}`), arr);
+  }
+}
+
+function renderScoring() {
+  const sc = CONFIG.scoring || {};
+  _loadScoringDim('d1', sc.title_tiers       || []);
+  _loadScoringDim('d2', sc.scope_tiers       || []);
+  _loadScoringDim('d4', sc.requirement_tiers || []);
+  // D3 domain tiers
+  const ds = CONFIG.domain_scoring || {};
+  for (const [key, arr] of [['t5','tier5'],['t4','tier4'],['t3','tier3'],['t2','tier2']]) {
+    _domainArrays[key].length = 0;
+    _domainArrays[key].push(...(ds[arr] || []));
+    buildTagWidget(document.getElementById('d3-' + arr), _domainArrays[key]);
+  }
+}
+
+function _collectScoringDim(dim) {
+  const tiers = [];
+  for (const s of [5, 4, 3, 2]) {
+    const kws = _scoringArrays[dim][s];
+    if (kws.length) tiers.push({ score: s, keywords: [...kws] });
+  }
+  tiers.push({ default: 1 });
+  return tiers;
+}
+function collectScoring() {
+  if (!CONFIG.scoring) CONFIG.scoring = {};
+  CONFIG.scoring.title_tiers       = _collectScoringDim('d1');
+  CONFIG.scoring.scope_tiers       = _collectScoringDim('d2');
+  CONFIG.scoring.requirement_tiers = _collectScoringDim('d4');
+  // D3 domain tiers
+  if (!CONFIG.domain_scoring) CONFIG.domain_scoring = {};
+  CONFIG.domain_scoring.tier5 = [..._domainArrays.t5];
+  CONFIG.domain_scoring.tier4 = [..._domainArrays.t4];
+  CONFIG.domain_scoring.tier3 = [..._domainArrays.t3];
+  CONFIG.domain_scoring.tier2 = [..._domainArrays.t2];
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  ROLE CATEGORIES
+// ══════════════════════════════════════════════════════════════════════════════
+function renderRoleCats() {
+  const cats = (CONFIG.role_categories || {}).categories || [];
+  document.getElementById('rolecats-list').innerHTML = cats.map((cat, i) => `
+    <div class="track-card"
+         style="margin-bottom:12px;padding:14px 16px;background:var(--card);border:1px solid var(--border);border-radius:8px">
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+        <span class="drag-handle" style="color:var(--muted);font-size:18px;cursor:grab;padding:0 4px;flex-shrink:0">&#8942;</span>
+        <input class="rc-label" value="${escHtml(cat.label)}" placeholder="Category label"
+               style="flex:0 0 180px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-weight:600">
+        <button class="btn-danger" onclick="removeRoleCat(this)" style="margin-left:auto">Remove</button>
+      </div>
+      <div style="color:var(--muted);font-size:11px;margin-bottom:4px">Keywords (one per line; empty = catch-all)</div>
+      <textarea class="rc-keywords" rows="4"
+                style="width:100%;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px 8px;font-family:monospace;font-size:12px;resize:vertical"
+                >${escHtml((cat.keywords || []).join('\n'))}</textarea>
+    </div>`).join('');
+  _initListDrag(
+    document.getElementById('rolecats-list'),
+    '.track-card',
+    null  // collectRoleCats reads DOM order - no extra sync needed
+  );
+}
+function collectRoleCats() {
+  const withKws = [], catchAlls = [];
+  document.querySelectorAll('#rolecats-list .track-card').forEach(card => {
+    const label = card.querySelector('.rc-label').value.trim();
+    const kws   = card.querySelector('.rc-keywords').value
+      .split('\n').map(s => s.trim()).filter(Boolean);
+    if (!label) return;
+    (kws.length ? withKws : catchAlls).push({ label, keywords: kws });
+  });
+  // Catch-all categories (no keywords) are always saved last regardless of drag order.
+  if (!CONFIG.role_categories) CONFIG.role_categories = {};
+  CONFIG.role_categories.categories = [...withKws, ...catchAlls];
+}
+function addRoleCat() {
+  if (!CONFIG.role_categories) CONFIG.role_categories = {};
+  CONFIG.role_categories.categories = CONFIG.role_categories.categories || [];
+  CONFIG.role_categories.categories.push({ label: 'New Category', keywords: [] });
+  renderRoleCats();
+}
+function removeRoleCat(btn) {
+  const card = btn.closest('.track-card');
+  const cards = [...document.querySelectorAll('#rolecats-list .track-card')];
+  const idx = cards.indexOf(card);
+  if (idx > -1) CONFIG.role_categories.categories.splice(idx, 1);
+  renderRoleCats();
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  REJECTION FILTERS
+// ══════════════════════════════════════════════════════════════════════════════
+function renderRejection() {
+  const rf = CONFIG.rejection_filters || {};
+  document.getElementById('rf_max_experience_years').value = rf.max_experience_years ?? 10;
+  document.getElementById('rf_max_travel_pct').value       = rf.max_travel_pct ?? 25;
+  renderTagSection('blocked_industries');
+  renderTagSection('domain_experience_industries');
+  renderTagSection('description_blockers');
+}
+function collectRejection() {
+  if (!CONFIG.rejection_filters) CONFIG.rejection_filters = {};
+  CONFIG.rejection_filters.max_experience_years =
+    parseInt(document.getElementById('rf_max_experience_years').value, 10);
+  CONFIG.rejection_filters.max_travel_pct =
+    parseInt(document.getElementById('rf_max_travel_pct').value, 10);
+  // tag lists are written back automatically via TAG_MAP array references
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  JOBRIGHT SEARCHES
+// ══════════════════════════════════════════════════════════════════════════════
+function renderJobright() {
+  const passes = (CONFIG.jobright_searches || {}).passes || [];
+  document.getElementById('jobright-passes-list').innerHTML = passes.map((p, i) => `
+    <div class="track-card" data-idx="${i}"
+         style="margin-bottom:12px;padding:14px 16px;background:var(--card);border:1px solid var(--border);border-radius:8px">
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+        <span style="font-weight:600;color:var(--accent)">${escHtml(p.id)}</span>
+        <button class="btn-danger" onclick="removeJobrightPass(${i})" style="margin-left:auto">Remove</button>
+      </div>
+      <div class="field-row col4">
+        <div class="field">
+          <label>Pass ID</label>
+          <input class="jp-id" value="${escHtml(p.id)}"
+                 style="width:100%;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px">
+        </div>
+        <div class="field">
+          <label>Search Mode</label>
+          <select class="jp-model" style="width:100%;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px">
+            <option value="remote"${p.work_model==='remote'?' selected':''}>Remote only</option>
+            <option value="local"${p.work_model==='local'?' selected':''}>Location-based (on-site &amp; hybrid)</option>
+          </select>
+        </div>
+        <div class="field" style="grid-column:span 2">
+          <label>Job Category <span style="color:var(--muted);font-weight:400">(Jobright&rsquo;s internal filter name, e.g. "Technical Program Manager")</span></label>
+          <input class="jp-taxonomy" value="${escHtml(p.taxonomy || '')}"
+                 placeholder="e.g. Technical Program Manager"
+                 style="width:100%;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px">
+        </div>
+      </div>
+      <div class="field" style="margin-top:6px">
+        <label>Label (shown in scraper output)</label>
+        <input class="jp-label" value="${escHtml(p.label || '')}"
+               style="width:100%;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:5px 8px">
+      </div>
+    </div>`).join('');
+}
+function collectJobright() {
+  const passes = [];
+  document.querySelectorAll('#jobright-passes-list .track-card').forEach(card => {
+    const id       = card.querySelector('.jp-id').value.trim();
+    const taxonomy = card.querySelector('.jp-taxonomy').value.trim();
+    const model    = card.querySelector('.jp-model').value;
+    const label    = card.querySelector('.jp-label').value.trim();
+    if (id) passes.push({ id, label, taxonomy, work_model: model });
+  });
+  if (!CONFIG.jobright_searches) CONFIG.jobright_searches = {};
+  CONFIG.jobright_searches.passes = passes;
+}
+function addJobrightPass() {
+  if (!CONFIG.jobright_searches) CONFIG.jobright_searches = {};
+  CONFIG.jobright_searches.passes = CONFIG.jobright_searches.passes || [];
+  CONFIG.jobright_searches.passes.push({ id: 'new_pass', label: 'New Pass', taxonomy: '', work_model: 'remote' });
+  renderJobright();
+}
+function removeJobrightPass(i) {
+  CONFIG.jobright_searches.passes.splice(i, 1);
+  renderJobright();
+}
+
+// ── Utility ───────────────────────────────────────────────────────────────────
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SETUP WIZARD
+// ══════════════════════════════════════════════════════════════════════════════
+const WIZ_TOTAL = 7;
+let _wizCurStep = 1;
+
+// Scratch arrays for wizard tag widgets (not linked to CONFIG yet - applied on finish)
+const _wizArrays = {
+  require:      [],
+  block:        [],
+  industries:   [],
+  companies:    [],
+  d3tier5:      [],
+  d3tier4:      [],
+  descblockers: [],
+  jbtaxonomies: [],
+};
+let _wizWtSelected = ['Remote'];  // default work type selection
+
+function initWizard() {
+  if (CONFIG.setup_complete === true) return;  // already set up
+
+  // Hide normal UI
+  document.querySelector('nav').style.display = 'none';
+  document.querySelectorAll('.tab').forEach(t => t.style.display = 'none');
+  document.getElementById('wizard').style.display = 'block';
+
+  // Build progress dots
+  const dots = document.getElementById('wiz-progress-dots');
+  dots.innerHTML = '';
+  for (let i = 1; i <= WIZ_TOTAL; i++) {
+    const d = document.createElement('span');
+    d.className = 'wiz-dot' + (i === 1 ? ' active' : '');
+    d.id = 'wiz-dot-' + i;
+    dots.appendChild(d);
+  }
+  const lbl = document.createElement('span');
+  lbl.className = 'wiz-step-label';
+  lbl.id = 'wiz-step-label';
+  lbl.textContent = 'Step 1 of ' + WIZ_TOTAL;
+  dots.appendChild(lbl);
+
+  // Seed tag widgets from existing config (if any)
+  const tf = CONFIG.title_filters || {};
+  _wizArrays.require    = [...(tf.title_require || [])];
+  _wizArrays.block      = [...(tf.title_block   || [])];
+  const rf = CONFIG.rejection_filters || {};
+  _wizArrays.industries = [...(rf.blocked_industries || [])];
+  _wizArrays.companies  = [...((CONFIG.company_lists || {}).blocked_companies || [])];
+
+  buildTagWidget(document.getElementById('wiz-tag-require'),    _wizArrays.require);
+  buildTagWidget(document.getElementById('wiz-tag-block'),      _wizArrays.block);
+  buildTagWidget(document.getElementById('wiz-tag-industries'), _wizArrays.industries);
+  buildTagWidget(document.getElementById('wiz-tag-companies'),  _wizArrays.companies);
+
+  // Seed track fields from first existing track (if any)
+  const t0 = (CONFIG.tracks || [])[0] || {};
+  document.getElementById('wiz-t-salary').value = t0.salary_floor || '';
+  const loc = (t0.target_location || '').split(',').map(s => s.trim());
+  document.getElementById('wiz-t-city').value = loc[0] || '';
+  _wizWtSelected = [...(t0.work_types || ['Remote'])];
+
+  // Work type pills
+  const wtSel = document.getElementById('wiz-wt-selector');
+  wtSel.innerHTML = '';
+  ['Remote', 'Onsite', 'Hybrid'].forEach(opt => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = opt;
+    btn.className = 'wt-pill' + (_wizWtSelected.includes(opt) ? ' selected' : '');
+    btn.onclick = () => {
+      if (_wizWtSelected.includes(opt)) {
+        _wizWtSelected = _wizWtSelected.filter(w => w !== opt);
+        btn.classList.remove('selected');
+      } else {
+        _wizWtSelected.push(opt);
+        btn.classList.add('selected');
+      }
+    };
+    wtSel.appendChild(btn);
+  });
+
+  // State dropdown
+  const stateSel = document.getElementById('wiz-t-state');
+  stateSel.innerHTML = stateOptions(loc[1] || '');
+  stateSel.style.color = (loc[1] || '') ? 'var(--text)' : 'var(--muted)';
+
+  // Seed domain scoring
+  const ds = CONFIG.domain_scoring || {};
+  _wizArrays.d3tier5      = [...(ds.tier5 || [])];
+  _wizArrays.d3tier4      = [...(ds.tier4 || [])];
+  _wizArrays.descblockers = [...(rf.description_blockers || [])];
+  buildTagWidget(document.getElementById('wiz-tag-d3tier5'),      _wizArrays.d3tier5);
+  buildTagWidget(document.getElementById('wiz-tag-d3tier4'),      _wizArrays.d3tier4);
+  buildTagWidget(document.getElementById('wiz-tag-descblockers'), _wizArrays.descblockers);
+
+  // Seed Jobright taxonomy tags (from existing passes, or fall back to required terms)
+  const passes = (CONFIG.jobright_searches || {}).passes || [];
+  const existingTax = [...new Set(passes.map(p => p.taxonomy).filter(Boolean))];
+  _wizArrays.jbtaxonomies = existingTax.length ? existingTax : [..._wizArrays.require];
+  buildTagWidget(document.getElementById('wiz-tag-jbtaxonomies'), _wizArrays.jbtaxonomies);
+  const hasLocal  = passes.some(p => p.work_model === 'local');
+  const hasRemote = passes.some(p => p.work_model === 'remote');
+  document.getElementById('wiz-jb-model').value =
+    (hasLocal && hasRemote) ? 'both' : hasLocal ? 'local' : 'remote';
+
+  showWizStep(1);
+}
+
+function showWizStep(n) {
+  // Lazily sync jbtaxonomies from require when arriving at step 5 for the first time
+  if (n === 5 && _wizArrays.jbtaxonomies.length === 0 && _wizArrays.require.length > 0) {
+    _wizArrays.jbtaxonomies = [..._wizArrays.require];
+    buildTagWidget(document.getElementById('wiz-tag-jbtaxonomies'), _wizArrays.jbtaxonomies);
+  }
+  _wizCurStep = n;
+  document.querySelectorAll('.wiz-step').forEach((s, i) => {
+    s.style.display = (i + 1 === n) ? '' : 'none';
+  });
+  for (let i = 1; i <= WIZ_TOTAL; i++) {
+    const d = document.getElementById('wiz-dot-' + i);
+    if (!d) continue;
+    d.className = 'wiz-dot' + (i < n ? ' done' : i === n ? ' active' : '');
+  }
+  const lbl = document.getElementById('wiz-step-label');
+  if (lbl) lbl.textContent = 'Step ' + n + ' of ' + WIZ_TOTAL;
+}
+
+function wizGo(n) { showWizStep(n); }
+
+function wizAddAts(platform) {
+  const container = document.getElementById('wiz-ats-rows');
+  const pat = SLUG_PATTERNS[platform];
+  const row = document.createElement('div');
+  row.className = 'wiz-kv-row';
+  row.dataset.platform = platform;
+  row.innerHTML = `
+    <span style="font-size:12px;color:var(--accent);font-weight:600;text-transform:capitalize">${escHtml(platform)}</span>
+    <input type="text" class="kv-name" placeholder="Company name">
+    <input type="text" class="kv-val"  placeholder="${SLUG_LABELS[platform] || 'Value'}">
+    <button class="kv-del" title="Remove" onclick="this.closest('.wiz-kv-row').remove()">&times;</button>`;
+  if (pat) {
+    row.querySelector('.kv-val').addEventListener('blur', function() {
+      const v = this.value.trim();
+      if (v.startsWith('http')) {
+        const m = v.match(pat);
+        if (m) { this.value = m[1]; toast('Slug extracted ✓'); }
+      }
+    });
+  }
+  container.appendChild(row);
+}
+
+function _wizApplyToConfig() {
+  // Track (create or update first)
+  const firstTerms = _wizArrays.require.slice(0, 2).join(', ') || 'Track';
+  const label  = (_wizWtSelected.length ? _wizWtSelected[0] : 'Remote') + ' - ' + firstTerms;
+  const salary = parseInt(document.getElementById('wiz-t-salary').value, 10) || 100000;
+  const city   = document.getElementById('wiz-t-city').value.trim();
+  const state  = document.getElementById('wiz-t-state').value.trim();
+  const loc    = (city || state) ? [city, state].filter(Boolean).join(', ') : null;
+  const wts    = _wizWtSelected.length ? _wizWtSelected : ['Remote'];
+  const existing = (CONFIG.tracks || [])[0];
+  const track = existing || {
+    key: 'TRACK_1', grade_a: 22, grade_b: 17, grade_c: 12,
+    salary_score_5: 120000, salary_score_4: 105000, salary_score_3: 90000,
+    reject_if_max_below: null, wiggle_room: 0, clearance_behavior: 'reject',
+    level_cap_b: [], reject_if_no_salary: false, min_domain_score: null,
+    domain_cap_at: null, score_weights: {d1:1,d2:1,d3:1,d4:1,d5:1},
+    excluded_companies: [], title_block: [], title_require: [], target_companies: [],
+  };
+  // Apply ternary defaults for required int fields that must not be null
+  const INT_TRACK_DEFAULTS = {
+    grade_a: 22, grade_b: 17, grade_c: 12,
+    salary_score_5: 120000, salary_score_4: 105000, salary_floor: 75000,
+  };
+  Object.entries(INT_TRACK_DEFAULTS).forEach(([k, v]) => {
+    if (track[k] === null || track[k] === undefined) track[k] = v;
+  });
+  track.label = label;
+  track.salary_floor = salary || track.salary_floor;
+  track.work_types = wts;
+  track.target_location = loc;
+  track.title_require = [..._wizArrays.require];
+  track.title_block   = [..._wizArrays.block];
+  if (!existing) {
+    if (!CONFIG.tracks) CONFIG.tracks = [];
+    CONFIG.tracks.unshift(track);
+  }
+
+  // Domain scoring
+  if (!CONFIG.domain_scoring) CONFIG.domain_scoring = {};
+  CONFIG.domain_scoring.tier5 = [..._wizArrays.d3tier5];
+  CONFIG.domain_scoring.tier4 = [..._wizArrays.d3tier4];
+
+  // Jobright + auto-derive run label from taxonomy
+  if (!CONFIG.pipeline) CONFIG.pipeline = {};
+  const taxonomies = _wizArrays.jbtaxonomies.length ? _wizArrays.jbtaxonomies : ['Search'];
+  CONFIG.pipeline.search_term = taxonomies[0] + ' Search';
+  const mode = document.getElementById('wiz-jb-model').value;
+  if (!CONFIG.jobright_searches) CONFIG.jobright_searches = {};
+  const passes = [];
+  taxonomies.forEach((taxonomy, idx) => {
+    if (mode === 'remote' || mode === 'both') {
+      passes.push({ id: 'remote_' + idx, label: 'Remote - ' + taxonomy, taxonomy, work_model: 'remote' });
+    }
+    if (mode === 'local' || mode === 'both') {
+      passes.push({ id: 'local_' + idx, label: 'Local - ' + taxonomy, taxonomy, work_model: 'local' });
+    }
+  });
+  CONFIG.jobright_searches.passes = passes;
+
+  // ATS boards from wizard rows
+  document.querySelectorAll('#wiz-ats-rows .wiz-kv-row').forEach(row => {
+    const platform = row.dataset.platform;
+    const name = row.querySelector('.kv-name').value.trim();
+    const val  = row.querySelector('.kv-val').value.trim();
+    if (name && platform && CONFIG.ats_boards && CONFIG.ats_boards[platform] !== undefined) {
+      CONFIG.ats_boards[platform][name] = val;
+    }
+  });
+
+  // Rejection filters
+  if (!CONFIG.rejection_filters) CONFIG.rejection_filters = {};
+  CONFIG.rejection_filters.blocked_industries   = [..._wizArrays.industries];
+  CONFIG.rejection_filters.description_blockers = [..._wizArrays.descblockers];
+  CONFIG.rejection_filters.max_experience_years = parseInt(document.getElementById('wiz-max-exp').value, 10) || 10;
+  CONFIG.rejection_filters.max_travel_pct       = parseInt(document.getElementById('wiz-max-travel').value, 10) || 25;
+  if (!CONFIG.company_lists) CONFIG.company_lists = {};
+  CONFIG.company_lists.blocked_companies = [..._wizArrays.companies];
+
+  // Mark setup complete
+  CONFIG.setup_complete = true;
+}
+
+function wizFinish() {
+  _wizApplyToConfig();
+  // Save via normal flow, then reload to show full UI
+  const data = CONFIG;
+  setStatus('Saving…', '');
+  window.electronAPI.saveConfig(data)
+    .then(() => { window.location.reload(); })
+    .catch(e  => { toast('Save failed: ' + e.message, true); setStatus('Error', 'err'); });
+}
+
+function wizSkip() {
+  CONFIG.setup_complete = true;
+  document.getElementById('wizard').style.display = 'none';
+  document.querySelector('nav').style.display = '';
+  document.querySelectorAll('.tab').forEach(t => t.style.display = '');
+  showTab('tracks', document.querySelector('nav button'));
+  render();
+}
+
+</script>
+</body>
+</html>

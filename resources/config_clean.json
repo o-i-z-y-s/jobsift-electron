@@ -1,0 +1,159 @@
+{
+  "user_state": "",
+  "tracks": [
+    {
+      "key": "TRACK_1",
+      "label": "",
+      "work_types": [
+        "Remote"
+      ],
+      "salary_floor": 0,
+      "grade_a": 22,
+      "grade_b": 17,
+      "grade_c": 12,
+      "salary_score_5": 120000,
+      "salary_score_4": 105000,
+      "salary_score_3": 90000,
+      "target_location": null,
+      "target_radius_mi": null,
+      "reject_if_max_below": null,
+      "wiggle_room": 0,
+      "clearance_behavior": "reject",
+      "reject_if_no_salary": false,
+      "min_domain_score": null,
+      "domain_cap_at": null,
+      "score_weights": {
+        "d1": 1,
+        "d2": 1,
+        "d3": 1,
+        "d4": 1,
+        "d5": 1
+      },
+      "excluded_companies": [],
+      "title_block": [],
+      "title_require": [],
+      "target_companies": [],
+      "level_cap_b": []
+    }
+  ],
+  "company_lists": {
+    "target_companies": [],
+    "blocked_companies": [],
+    "blocked_agencies": [],
+    "premium_agencies": []
+  },
+  "title_filters": {
+    "title_require": [],
+    "title_block": [],
+    "card_exclude": []
+  },
+  "ats_boards": {
+    "greenhouse": {},
+    "lever": {},
+    "ashby": {},
+    "workday_direct": {},
+    "workday_companies": {},
+    "workday_search_terms": []
+  },
+  "settings": {
+    "dashboard_browser": "chrome",
+    "min_match_pct": 60,
+    "scroll_pause_ms": 1800,
+    "slow_mo": 25,
+    "detail_workers": 4
+  },
+  "domain_scoring": {
+    "tier5": [],
+    "tier4": [],
+    "tier3": [],
+    "tier2": []
+  },
+  "pipeline": {
+    "search_term": "",
+    "generate_copies": {},
+    "track_routing": []
+  },
+  "scoring": {
+    "title_tiers": [
+      {
+        "score": 5,
+        "keywords": []
+      },
+      {
+        "score": 4,
+        "keywords": []
+      },
+      {
+        "score": 3,
+        "keywords": []
+      },
+      {
+        "default": 1
+      }
+    ],
+    "scope_tiers": [
+      {
+        "score": 5,
+        "keywords": []
+      },
+      {
+        "score": 4,
+        "keywords": []
+      },
+      {
+        "score": 3,
+        "keywords": []
+      },
+      {
+        "score": 2,
+        "keywords": []
+      },
+      {
+        "default": 1
+      }
+    ],
+    "requirement_tiers": [
+      {
+        "score": 5,
+        "keywords": []
+      },
+      {
+        "score": 4,
+        "keywords": []
+      },
+      {
+        "score": 3,
+        "keywords": []
+      },
+      {
+        "default": 1
+      }
+    ]
+  },
+  "role_categories": {
+    "categories": []
+  },
+  "rejection_filters": {
+    "max_experience_years": 10,
+    "max_travel_pct": 25,
+    "blocked_industries": [],
+    "domain_experience_industries": [],
+    "description_blockers": []
+  },
+  "jobright_searches": {
+    "passes": [
+      {
+        "id": "remote_us",
+        "label": "Remote",
+        "taxonomy": "",
+        "work_model": "remote"
+      },
+      {
+        "id": "local_irl",
+        "label": "Local",
+        "taxonomy": "",
+        "work_model": "local"
+      }
+    ]
+  }
+}

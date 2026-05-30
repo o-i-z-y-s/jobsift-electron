@@ -1,0 +1,37 @@
+{
+  "name": "jobsift",
+  "productName": "Jobsift",
+  "version": "0.1.0",
+  "description": "Automated job search pipeline",
+  "main": "src/main.js",
+  "author": "",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac"
+  },
+  "dependencies": {
+    "electron": "42.3.0",
+    "electron-updater": "6.8.3"
+  },
+  "devDependencies": {
+    "electron-builder": "26.8.1"
+  },
+  "overrides": {
+    "ejs":            "3.1.10",
+    "tar":            "7.5.15",
+    "minimatch":      "10.2.5",
+    "debug":          "4.4.3",
+    "js-yaml":        "4.1.1",
+    "ansi-styles":    "6.2.3",
+    "strip-ansi":     "7.1.2",
+    "supports-color": "10.2.2",
+    "wrap-ansi":      "9.0.2",
+    "rimraf":         "2.7.1",
+    "glob": {
+      "minimatch":    "~3.1.3"
+    }
+  }
+}

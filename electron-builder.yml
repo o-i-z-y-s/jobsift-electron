@@ -1,0 +1,34 @@
+appId: com.jobsift.app
+productName: Jobsift
+
+directories:
+  output: dist
+
+files:
+  - src/**
+  - ui/**
+  - assets/**
+  - package.json
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: assets/icon.ico
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  installerIcon: assets/icon.ico
+  uninstallerIcon: assets/icon.ico
+
+mac:
+  target:
+    - target: dmg
+  icon: assets/icon.icns
+  category: public.app-category.productivity
+
+publish:
+  provider: github
+  owner: GITHUB_OWNER
+  repo: jobsift-electron
