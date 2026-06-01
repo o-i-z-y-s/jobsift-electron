@@ -302,6 +302,7 @@ async function run(mergePayload, cfg) {
   const resultsRaw  = mergePayload.results || [];
   const scanLabel   = mergePayload.scan_label || 'This scan';
   const today       = mergePayload.date || new Date().toISOString().slice(0, 10);
+  const scrapeTime  = mergePayload.time || '';
   const searchTerm  = cfg.pipeline?.search_term || '';
   const roleCats    = cfg.role_categories?.categories || [{ label: 'Other', keywords: [] }];
 
@@ -993,7 +994,7 @@ async function run(mergePayload, cfg) {
   return {
     accepted: {
       meta: {
-        date: today, search_term: searchTerm, locations: locationsStr,
+        date: today, time: scrapeTime, search_term: searchTerm, locations: locationsStr,
         qualifying_count: acceptedFinal.length, reviewed_count: allResults.length,
         total_results: allResults.length,
         grade_a: gradeCount.A || 0, grade_b: gradeCount.B || 0, grade_c: gradeCount.C || 0,
@@ -1008,7 +1009,7 @@ async function run(mergePayload, cfg) {
     },
     rejected: {
       meta: {
-        date: today, search_term: searchTerm,
+        date: today, time: scrapeTime, search_term: searchTerm,
         total_raw: allResults.length, total_accepted: acceptedFinal.length, total_rejected: rejectedFinal.length,
         ...Object.fromEntries(CAT_ORDER.map(c => [`${c}_count`, catCntRej[c] || 0])),
         key_observation: `${rejectedFinal.length} listings excluded. ` +

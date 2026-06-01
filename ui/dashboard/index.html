@@ -714,6 +714,7 @@
       <button onclick="runNow()" style="background:var(--accent);color:#fff;border:none;padding:9px 22px;border-radius:6px;font-size:14px;cursor:pointer;font-weight:600">&#9654; Run Now</button>
       <button id="signin-btn" onclick="window.electronAPI?.openLoginWindow()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:9px 22px;border-radius:6px;font-size:14px;cursor:pointer">Sign In to Jobright</button>
       <button onclick="openConfig()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:9px 22px;border-radius:6px;font-size:14px;cursor:pointer">&#9881; Configuration</button>
+      <button onclick="openSchedule()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:9px 22px;border-radius:6px;font-size:14px;cursor:pointer">&#128197; Schedule</button>
       <button onclick="loadPastResult()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:9px 22px;border-radius:6px;font-size:14px;cursor:pointer">Load Past Result</button>
     </div>
   </div>
@@ -1039,6 +1040,11 @@ function openConfig() {
   window.location.href = '../config/index.html';
 }
 
+function openSchedule() {
+  // Same window, deep-linked to the Scheduled Runs section of Settings.
+  window.location.href = '../config/index.html?goto=schedule';
+}
+
 // When checked, the run skips cross-run de-duplication and shows its full set.
 let _includeSeen = false;
 function setIncludeSeen(v) {
@@ -1211,7 +1217,7 @@ function render(data) {
 
   // Header meta
   document.getElementById('header-meta').innerHTML = [
-    meta.date             ? `<span>📅 ${meta.date}</span>` : '',
+    meta.date             ? `<span>📅 ${meta.date}${meta.time ? ` · 🕒 ${meta.time}` : ''}</span>` : '',
     meta.search_term      ? `<span>🔍 ${meta.search_term}</span>` : '',
     meta.locations        ? `<span>🌐 ${meta.locations}</span>` : '',
     meta.qualifying_count != null ? `<span>📊 ${meta.qualifying_count} qualifying roles</span>` : '',

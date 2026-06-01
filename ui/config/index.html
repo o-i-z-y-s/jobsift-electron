@@ -44,10 +44,13 @@
 
   /* ── Shared form primitives ── */
   label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
-  input[type=text], input[type=number], select {
+  input[type=text], input[type=number], input[type=time], select {
     width: 100%; background: var(--bg); border: 1px solid var(--border);
-    color: var(--text); border-radius: 5px; padding: 7px 10px; font-size: 13px; }
+    color: var(--text); border-radius: 5px; padding: 7px 10px; font-size: 13px;
+    color-scheme: dark; }
   input:focus, select:focus { outline: none; border-color: var(--accent); }
+  /* Render the native time picker popup + clock icon in dark mode */
+  input[type=time]::-webkit-calendar-picker-indicator { filter: invert(0.85); cursor: pointer; }
   .field { margin-bottom: 14px; }
   .field-row { display: grid; gap: 14px; margin-bottom: 14px; }
   .field-row > div { display: flex; flex-direction: column; }
@@ -554,6 +557,42 @@
     </div>
   </div>
 
+  <h3 id="sched-section">Scheduled Runs</h3>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:8px">Run a scrape automatically on a recurring schedule. JobSift must be running (it stays in the tray) for a scheduled run to fire.</p>
+  <div class="field" style="margin-bottom:10px">
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+      <input type="checkbox" id="sched_enabled"> Enable scheduled runs
+    </label>
+  </div>
+  <div class="field-row col4">
+    <div class="field">
+      <label>Frequency</label>
+      <select id="sched_frequency">
+        <option value="1">Daily</option>
+        <option value="2">Every 2 days</option>
+        <option value="3">Every 3 days</option>
+        <option value="7">Weekly</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Time of day</label>
+      <input type="time" id="sched_time" value="08:00">
+    </div>
+    <div class="field">
+      <label>Scrape timeframe</label>
+      <select id="sched_timeframe">
+        <option value="1">Past 24 hours</option>
+        <option value="3">Past 3 days</option>
+        <option value="7">Past week</option>
+        <option value="30">Past month</option>
+      </select>
+    </div>
+    <div class="field" style="align-self:flex-end">
+      <button class="btn-add-row" onclick="saveSchedule()" style="margin:0">Save schedule</button>
+    </div>
+  </div>
+  <p id="sched-status" style="color:var(--muted);font-size:12px;margin-top:2px"></p>
+
   <hr style="margin-top:28px">
 
   <details style="margin-top:4px">
@@ -809,8 +848,59 @@ function stateOptions(selected) {
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 window.electronAPI.loadConfig()
-  .then(data => { CONFIG = data; render(); setStatus('Loaded', 'ok'); initWizard(); })
+  .then(data => { CONFIG = data; render(); setStatus('Loaded', 'ok'); initWizard(); loadSchedule(); handleGoto(); })
   .catch(e  => setStatus('Load failed: ' + e.message, 'err'));
+
+// Deep-link support: ?goto=schedule jumps to Settings and the Scheduled Runs section.
+function handleGoto() {
+  try {
+    const params = new URLSearchParams(location.search);
+    if (params.get('goto') === 'schedule' && CONFIG.setup_complete === true) {
+      const settingsBtn = [...document.querySelectorAll('nav button')].find(b => b.textContent.trim() === 'Settings');
+      showTab('settings', settingsBtn);
+      const sec = document.getElementById('sched-section');
+      if (sec) setTimeout(() => sec.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+    }
+  } catch { /* ignore */ }
+}
+
+// ── Scheduled runs ──────────────────────────────────────────────────────────
+function loadSchedule() {
+  if (!window.electronAPI?.getSchedule) return;
+  window.electronAPI.getSchedule().then(s => {
+    s = s || {};
+    const el = id => document.getElementById(id);
+    if (el('sched_enabled'))   el('sched_enabled').checked = !!s.enabled;
+    if (el('sched_frequency')) el('sched_frequency').value = String(s.frequencyDays || 1);
+    if (el('sched_time'))      el('sched_time').value =
+      `${String(s.hour ?? 8).padStart(2, '0')}:${String(s.minute ?? 0).padStart(2, '0')}`;
+    if (el('sched_timeframe')) el('sched_timeframe').value = String(s.daysAgo || 7);
+    renderSchedStatus(s);
+  }).catch(() => {});
+}
+
+function renderSchedStatus(s) {
+  const st = document.getElementById('sched-status');
+  if (!st) return;
+  if (!s.enabled) { st.textContent = 'Scheduled runs are disabled.'; return; }
+  const t = `${String(s.hour ?? 8).padStart(2, '0')}:${String(s.minute ?? 0).padStart(2, '0')}`;
+  const every = (s.frequencyDays || 1) === 1 ? 'every day' : `every ${s.frequencyDays} days`;
+  st.textContent = `Enabled: ${every} at ${t}, scraping the past ${s.daysAgo || 7} day(s).`;
+}
+
+function saveSchedule() {
+  const [h, m] = (document.getElementById('sched_time').value || '08:00').split(':');
+  const schedule = {
+    enabled:       document.getElementById('sched_enabled').checked,
+    frequencyDays: parseInt(document.getElementById('sched_frequency').value, 10) || 1,
+    hour:          parseInt(h, 10) || 0,
+    minute:        parseInt(m, 10) || 0,
+    daysAgo:       parseInt(document.getElementById('sched_timeframe').value, 10) || 7,
+  };
+  window.electronAPI.setSchedule(schedule);
+  renderSchedStatus(schedule);
+  toast('Schedule saved');
+}
 
 // ── Tab navigation ────────────────────────────────────────────────────────────
 function showTab(id, btn) {
@@ -2012,12 +2102,8 @@ function wizFinish() {
   setStatus('Saving…', '');
   window.electronAPI.saveConfig(CONFIG)
     .then(() => {
-      // Prepare this window's full config view behind the scenes, then send the
-      // user to the dashboard and hide this window. Only the dashboard is shown;
-      // the dashboard's Configure button reopens this window on full settings.
-      _revealFullConfig();
-      window.electronAPI?.openDashboard?.();
-      window.close();
+      // Single window: navigate this same window to the dashboard.
+      window.location.href = '../dashboard/index.html';
     })
     .catch(e  => { toast('Save failed: ' + e.message, true); setStatus('Error', 'err'); });
 }

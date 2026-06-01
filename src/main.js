@@ -8,7 +8,7 @@
 
 const {
   app, BrowserWindow, Tray, Menu, nativeImage,
-  ipcMain, net, session,
+  ipcMain, net, session, Notification,
 } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
@@ -24,6 +24,8 @@ const scheduler  = require('./scheduler');
 // which would point at a different userData folder with no config. Setting it
 // explicitly here (before 'ready') keeps config and data in one place.
 app.setName('JobSift');
+// Required on Windows for native notifications to be attributed to this app.
+app.setAppUserModelId('com.jobsift.app');
 
 // ── Runtime footprint trimming ────────────────────────────────────────────────
 // This app only renders local HTML and scrapes pages in hidden windows; it has
@@ -74,8 +76,7 @@ const SCAN_LABELS = { 1: 'Past 24 hours', 3: 'Past 3 days', 7: 'Past week', 30: 
 
 let tray         = null;
 let loginWin     = null;
-let configWin    = null;
-let dashboardWin = null;
+let mainWin      = null;   // single app window (dashboard + config + wizard)
 let scrapeAbort  = null;   // AbortController | null
 let isQuitting   = false;
 let lastDaysAgo  = 7;      // last-used scan period (days); persisted in config._lastDaysAgo
@@ -110,21 +111,32 @@ function makeWin(opts = {}) {
 
 // ── Named window accessors ────────────────────────────────────────────────────
 
-function getDashboard() {
-  if (!dashboardWin || dashboardWin.isDestroyed()) {
-    dashboardWin = makeWin({ width: 1600, height: 900, minWidth: 1100, minHeight: 700, title: 'JobSift' });
-    dashboardWin.loadFile(path.join(__dirname, '..', 'ui', 'dashboard', 'index.html'));
+// Single application window. The dashboard, config, and wizard are all pages
+// loaded into this one window (navigated either here or via window.location in
+// the renderer), so only one app window can ever exist at a time.
+function getMain() {
+  if (!mainWin || mainWin.isDestroyed()) {
+    mainWin = makeWin({ width: 1600, height: 900, minWidth: 1100, minHeight: 700, title: 'JobSift' });
   }
-  return dashboardWin;
+  return mainWin;
 }
 
-function getConfig() {
-  if (!configWin || configWin.isDestroyed()) {
-    configWin = makeWin({ width: 1600, height: 900, minWidth: 1100, minHeight: 700, title: 'JobSift - Settings' });
-    configWin.loadFile(path.join(__dirname, '..', 'ui', 'config', 'index.html'));
+// Load a UI page into the single window and surface it. Skips a redundant reload
+// if already on that page (unless a query string is requested, e.g. goto=schedule).
+function showPage(rel, opts) {
+  const win = getMain();
+  const section = rel.split('/')[0].toLowerCase();
+  const cur = (win.webContents.getURL() || '').toLowerCase();
+  if (!cur.includes('/' + section + '/') || (opts && opts.search)) {
+    win.loadFile(path.join(__dirname, '..', 'ui', rel), opts);
   }
-  return configWin;
+  win.show();
+  win.focus();
+  return win;
 }
+
+function showDashboard()    { return showPage('dashboard/index.html'); }
+function showConfig(opts)   { return showPage('config/index.html', opts); }
 
 function getLogin() {
   if (!loginWin || loginWin.isDestroyed()) {
@@ -173,7 +185,7 @@ function getLogin() {
         if (newSession) {
           stopLoginPoll();
           if (loginWin && !loginWin.isDestroyed()) loginWin.hide();
-          getDashboard().show();
+          showDashboard();
           broadcast('auth:loginComplete', {});
         }
       }, 1500);
@@ -201,7 +213,7 @@ function setupTray() {
   tray = new Tray(icon);
   tray.setToolTip('JobSift');
   tray.setContextMenu(buildTrayMenu());
-  tray.on('double-click', () => { getDashboard().show(); });
+  tray.on('double-click', () => { showDashboard(); });
 }
 
 function buildTrayMenu() {
@@ -213,8 +225,9 @@ function buildTrayMenu() {
                        : () => triggerScrape({ daysAgo: lastDaysAgo }),
     },
     { type: 'separator' },
-    { label: 'Open Dashboard', click: () => { getDashboard().show(); } },
-    { label: 'Settings',       click: () => { getConfig().show();    } },
+    { label: 'Open Dashboard',     click: () => { showDashboard(); } },
+    { label: 'Settings',           click: () => { showConfig(); } },
+    { label: 'Configure Schedule', click: () => { showConfig({ search: 'goto=schedule' }); } },
     { label: 'Sign In',        click: () => { getLogin().show();     } },
     { type: 'separator' },
     { label: 'Quit', click: () => { isQuitting = true; app.quit(); } },
@@ -224,6 +237,8 @@ function buildTrayMenu() {
 function refreshTrayMenu() {
   if (tray && !tray.isDestroyed()) {
     tray.setContextMenu(buildTrayMenu());
+    // Hovering the tray icon reflects whether a scrape (manual or scheduled) is running.
+    tray.setToolTip(scrapeAbort ? 'JobSift — scraping in progress…' : 'JobSift');
   }
 }
 
@@ -265,17 +280,31 @@ async function checkLoggedIn() {
 // ── Progress broadcast ────────────────────────────────────────────────────────
 
 function broadcast(channel, payload) {
-  for (const win of [dashboardWin, configWin]) {
-    if (win && !win.isDestroyed()) {
-      win.webContents.send(channel, payload);
-    }
+  if (mainWin && !mainWin.isDestroyed()) {
+    mainWin.webContents.send(channel, payload);
   }
+}
+
+// Unintrusive native OS notification (used for silent/background scheduled runs).
+// onClick, if given, runs when the user clicks the notification.
+function notify(title, body, onClick) {
+  try {
+    if (!Notification.isSupported || !Notification.isSupported()) return;
+    const iconPath = path.join(__dirname, '..', 'resources', 'icon.png');
+    const n = new Notification({
+      title, body,
+      icon: fs.existsSync(iconPath) ? iconPath : undefined,
+      silent: false,
+    });
+    if (onClick) n.on('click', onClick);
+    n.show();
+  } catch { /* notifications are best-effort */ }
 }
 
 // ── Pipeline ──────────────────────────────────────────────────────────────────
 
 async function runPipeline(options) {
-  const { daysAgo = 7, includeSeen = false } = options || {};
+  const { daysAgo = 7, includeSeen = false, background = false } = options || {};
   const ts = timestamp();
 
   // Lazy requires - scrapers/eval are written later; prevents startup failure
@@ -294,7 +323,12 @@ async function runPipeline(options) {
   broadcast('scrape:progress', { step: 'auth', message: 'Checking Jobright session...', pct: 2 });
   const loggedIn = await checkLoggedIn();
   if (!loggedIn) {
-    getLogin().show();
+    if (background) {
+      // Scheduled run: do not pop a window; prompt unintrusively via a notification.
+      notify('JobSift', 'Sign in to Jobright to run the scheduled scrape.', () => getLogin().show());
+    } else {
+      getLogin().show();
+    }
     broadcast('auth:required', {});
     throw new Error('__AUTH_REQUIRED__');  // sentinel: handled as a prompt, not an error
   }
@@ -409,6 +443,7 @@ async function runPipeline(options) {
   const mergePayload = {
     scraped_at: new Date().toISOString(),
     date:       ts.slice(0, 10),
+    time:       ts.slice(11).replace('-', ':'),  // HH:MM, local time of the run
     days_ago:   daysAgo,
     scan_label: SCAN_LABELS[daysAgo] || `Past ${daysAgo} days`,
     results:    merged,
@@ -456,9 +491,16 @@ async function triggerScrape(options) {
     lastDaysAgo = options.daysAgo;
     try { const c = cfgModule.load(); c._lastDaysAgo = lastDaysAgo; cfgModule.save(c); } catch { /* ignore */ }
   }
+  const background = !!(options && options.background);
   scrapeAbort = new AbortController();
   refreshTrayMenu();
-  getDashboard().show();
+  // Foreground runs surface the dashboard; scheduled (background) runs stay silent
+  // in the tray and report via unintrusive notifications instead.
+  if (!background) {
+    showDashboard();
+  } else {
+    notify('JobSift', 'Scheduled scrape started…', () => showDashboard());
+  }
   try {
     const result = await runPipeline(options);
     // The pipeline always saves an artifact now, even on cancel (it processes
@@ -467,6 +509,12 @@ async function triggerScrape(options) {
     if (result) {
       const aborted = scrapeAbort && scrapeAbort.signal.aborted;
       broadcast('scrape:complete', { ...result, cancelled: !!aborted });
+      if (background && !aborted) {
+        const c = result.counts || {};
+        notify('JobSift scrape complete',
+          `${c.accepted ?? 0} accepted, ${c.rejected ?? 0} screened out. Click to view.`,
+          () => showDashboard());
+      }
     } else if (scrapeAbort && scrapeAbort.signal.aborted) {
       broadcast('scrape:cancelled', {});
     }
@@ -477,6 +525,9 @@ async function triggerScrape(options) {
       broadcast('scrape:cancelled', {});
     } else if (err.message !== '__AUTH_REQUIRED__') {
       broadcast('scrape:error', { message: err.message });
+      if (background) {
+        notify('JobSift scheduled run failed', err.message, () => showDashboard());
+      }
     }
   } finally {
     scrapeAbort = null;
@@ -538,7 +589,7 @@ function registerIpc() {
   // Scheduler
   ipcMain.handle('scheduler:get', () => {
     const cfg = cfgModule.load();
-    return cfg._scheduler ?? { enabled: false, cronHour: 8, cronMinute: 0 };
+    return cfg._scheduler ?? { enabled: false, frequencyDays: 1, hour: 8, minute: 0, daysAgo: 7 };
   });
   ipcMain.handle('scheduler:set', (_e, schedule) => {
     const cfg = cfgModule.load();
@@ -548,8 +599,8 @@ function registerIpc() {
   });
 
   // Window navigation
-  ipcMain.handle('config:openWindow', () => { getConfig().show(); });
-  ipcMain.handle('dashboard:open',    () => { getDashboard().show(); });
+  ipcMain.handle('config:openWindow', () => { showConfig(); });
+  ipcMain.handle('dashboard:open',    () => { showDashboard(); });
 
   // Run period (persisted scan window in days)
   ipcMain.handle('run:getPeriod', () => lastDaysAgo);
@@ -589,7 +640,7 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    const win = getDashboard();
+    const win = getMain();
     if (win.isMinimized()) win.restore();
     win.show();
     win.focus();
@@ -627,9 +678,9 @@ app.whenReady().then(async () => {
   let configured = false;
   try { configured = cfgModule.load().setup_complete === true; } catch { configured = false; }
   if (configured) {
-    getDashboard().show();
+    showDashboard();
   } else {
-    getConfig().show();
+    showConfig();  // config page auto-shows the setup wizard when setup_complete !== true
   }
 });
 
