@@ -1,5 +1,5 @@
 appId: com.jobsift.app
-productName: Jobsift
+productName: JobSift
 
 directories:
   output: dist

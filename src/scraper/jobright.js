@@ -172,12 +172,12 @@ async function sortTopMatched(win) {
  * Stops when MIN_MATCH_PCT is hit three consecutive times.
  * Mirrors collect_listing_urls() in jobright_scraper.py.
  */
-async function collectListingUrls(win, minPct, seen, cardExcludeRe, scrollPauseMs, signal) {
+async function collectListingUrls(win, minPct, seen, cardExcludeRe, scrollPauseMs, signal, passControl = null) {
   const results = [];
   let stall = 0;  // consecutive scroll passes that loaded no new cards (end guard)
 
   while (true) {
-    if (signal?.aborted) break;
+    if (signal?.aborted || passControl?.abort) break;
 
     const cards = await js(win, `
       (function() {
@@ -280,12 +280,16 @@ async function extractDetail(win, item) {
   };
   const record = { ...item, ...empty };
 
-  try {
+  // Retry so a transient page-load timeout re-attempts the page instead of
+  // dropping the listing (important when evaluating everything down to threshold).
+  const MAX_ATTEMPTS = 2;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+   try {
     // loadURL resolves on did-finish-load and rejects on did-fail-load, so the
     // load is already complete here. Readiness of SPA content is handled by the
     // waitSelector poll below.
     await win.loadURL(item.url);
-    const h1Found = await waitSelector(win, 'h1', 10000);
+    const h1Found = await waitSelector(win, 'h1', 12000);
     if (!h1Found) throw new Error('h1 not found');
     await sleep(300);
 
@@ -366,6 +370,7 @@ async function extractDetail(win, item) {
     `);
 
     Object.assign(record, extracted);
+    record.error = null;  // succeeded; clear any error from a prior attempt
 
     if (record.is_closed) {
       record.error = 'CLOSED';
@@ -380,8 +385,12 @@ async function extractDetail(win, item) {
       if (m) record.salary = m[0];
     }
 
-  } catch (err) {
+    return record;  // success
+
+   } catch (err) {
     record.error = err.message === 'Navigation timeout' ? 'timeout' : err.message;
+    if (attempt < MAX_ATTEMPTS) await sleep(800);
+   }
   }
 
   return record;
@@ -393,7 +402,7 @@ async function extractDetail(win, item) {
  * Process detail pages using a pool of N hidden BrowserWindows.
  * N comes from config.settings.detail_workers (default 3).
  */
-async function fetchDetailsPool(listings, nWorkers, signal, onTick) {
+async function fetchDetailsPool(listings, nWorkers, signal, onTick, passControl = null) {
   const workers = Array.from({ length: nWorkers }, makeHiddenWindow);
   const results = new Array(listings.length);
   let nextIdx = 0;
@@ -402,7 +411,7 @@ async function fetchDetailsPool(listings, nWorkers, signal, onTick) {
   async function workerLoop(win) {
     try {
       while (true) {
-        if (signal?.aborted) break;
+        if (signal?.aborted || passControl?.abort) break;
         const idx = nextIdx++;
         if (idx >= listings.length) break;
         try {
@@ -431,7 +440,7 @@ async function fetchDetailsPool(listings, nWorkers, signal, onTick) {
 
 // ── One search pass ───────────────────────────────────────────────────────────
 
-async function runSearch(searchCfg, minPct, scrollPauseMs, nWorkers, cardExcludeRe, seen, signal, onProgress) {
+async function runSearch(searchCfg, minPct, scrollPauseMs, nWorkers, cardExcludeRe, seen, signal, onProgress, passControl = null) {
   console.log(`\n  ${'='.repeat(56)}`);
   console.log(`  Pass: ${searchCfg.label}`);
   console.log(`  URL:  ${searchCfg.url}`);
@@ -455,10 +464,11 @@ async function runSearch(searchCfg, minPct, scrollPauseMs, nWorkers, cardExclude
     await sortTopMatched(win);
 
     console.log(`    Collecting listings >= ${minPct}% match...`);
-    const listings = await collectListingUrls(win, minPct, seen, cardExcludeRe, scrollPauseMs, signal);
+    const listings = await collectListingUrls(win, minPct, seen, cardExcludeRe, scrollPauseMs, signal, passControl);
     win.destroy();
 
-    if (!listings.length || signal?.aborted) return [];
+    // If the pass was skipped during collection, roll over with nothing.
+    if (!listings.length || signal?.aborted || passControl?.abort) return [];
 
     // Tag each listing with the current search pass
     for (const l of listings) l.search_pass = searchCfg.id;
@@ -468,7 +478,7 @@ async function runSearch(searchCfg, minPct, scrollPauseMs, nWorkers, cardExclude
     const results = await fetchDetailsPool(listings, nWorkers, signal, (done, tot, detail) => {
       process.stdout.write(`\r    [${String(done).padStart(3)}/${tot}] ${detail.jid}  `);
       if (onProgress) onProgress(`Pass ${searchCfg.label}: ${done}/${tot}`, done / tot);
-    });
+    }, passControl);
     console.log(`\n    ${results.length} records extracted`);
     return results;
   } catch (err) {
@@ -482,13 +492,13 @@ async function runSearch(searchCfg, minPct, scrollPauseMs, nWorkers, cardExclude
 /**
  * run({ cfg, daysAgo, signal, onProgress }) -> Array of job records
  */
-async function run({ cfg, daysAgo = 7, signal, onProgress }) {
+async function run({ cfg, daysAgo = 7, signal, onProgress, passControl = null }) {
   const emit = (msg, pct) => { if (onProgress) onProgress(msg, pct); };
 
   const settings      = cfg.settings       || {};
   const minPct        = settings.min_match_pct  ?? 60;
   const scrollPause   = settings.scroll_pause_ms ?? 1800;
-  const nWorkers      = Math.max(1, settings.detail_workers ?? 3);
+  const nWorkers      = Math.max(1, settings.detail_workers ?? 6);
   const cardExcludeRe = buildCardExcludeRe(cfg.title_filters?.card_exclude || []);
 
   const searches = buildSearches(cfg, daysAgo);
@@ -500,13 +510,23 @@ async function run({ cfg, daysAgo = 7, signal, onProgress }) {
 
   for (const search of searches) {
     if (signal?.aborted) break;
+    if (passControl) passControl.abort = false;  // reset the per-pass skip flag
     emit(`Running pass: ${search.label}`, passIdx / searches.length);
-    const results = await runSearch(
-      search, minPct, scrollPause, nWorkers, cardExcludeRe,
-      seen, signal,
-      (msg, pct) => emit(msg, (passIdx + pct) / searches.length),
-    );
-    allResults.push(...results);
+    // Isolate each pass: a failure (e.g. a search-page load timeout) on one
+    // pass should not lose the listings already gathered by other passes.
+    try {
+      const results = await runSearch(
+        search, minPct, scrollPause, nWorkers, cardExcludeRe,
+        seen, signal,
+        (msg, pct) => emit(msg, (passIdx + pct) / searches.length),
+        passControl,
+      );
+      allResults.push(...results);
+      if (passControl?.abort) emit(`Pass "${search.label}" skipped by user; continuing`, (passIdx + 1) / searches.length);
+    } catch (err) {
+      console.error(`  Pass "${search.label}" failed: ${err.message}`);
+      emit(`Pass "${search.label}" failed (${err.message}); continuing`, (passIdx + 1) / searches.length);
+    }
     passIdx++;
   }
 

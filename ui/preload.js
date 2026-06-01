@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ── Scrape lifecycle ────────────────────────────────────────────────────────
   startScrape:  (options) => ipcRenderer.invoke('scrape:start', options),
   cancelScrape: ()        => ipcRenderer.invoke('scrape:cancel'),
+  abortPass:    ()        => ipcRenderer.invoke('scrape:abortPass'),
 
   onScrapeProgress: (cb) => {
     const handler = (_event, data) => cb(data);

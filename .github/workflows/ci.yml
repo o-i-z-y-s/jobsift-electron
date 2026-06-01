@@ -1,0 +1,89 @@
+name: CI
+
+# Validates the code and verifies the app still packages, on every push to main
+# and every pull request. No test frameworks are installed (per project policy);
+# checks rely only on Node's built-ins and npm's own audit.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      # SECURITY: for the strictest supply-chain posture, replace each "@vN" with
+      # the full reviewed commit SHA (e.g. actions/checkout@<40-char-sha>).
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install from the audited lockfile
+        run: npm ci
+
+      - name: JavaScript syntax check
+        run: |
+          set -e
+          for f in $(find src ui -name '*.js'); do
+            echo "checking $f"
+            node --check "$f"
+          done
+
+      - name: Validate JSON config files
+        run: |
+          node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'))"
+          node -e "JSON.parse(require('fs').readFileSync('package-lock.json','utf8'))"
+          node -e "JSON.parse(require('fs').readFileSync('resources/config.json','utf8'))"
+
+      - name: Validate electron-builder.yml
+        run: node -e "require('js-yaml').load(require('fs').readFileSync('electron-builder.yml','utf8'))"
+
+      - name: Ensure node_modules is not committed
+        run: |
+          if git ls-files --error-unmatch node_modules > /dev/null 2>&1; then
+            echo "::error::node_modules must not be tracked in git"
+            exit 1
+          fi
+
+      - name: Security audit (fail on high/critical)
+        run: npm audit --audit-level=high
+
+  build-check:
+    # Verify the app actually packages on each target, without producing an
+    # installer or publishing. Catches build/config breakage before a tag.
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: win
+          - os: macos-latest
+            target: mac
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install from the audited lockfile
+        run: npm ci
+
+      - name: Package unpacked (no installer, no publish)
+        run: npx --no-install electron-builder --${{ matrix.target }} --dir --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"

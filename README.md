@@ -1,6 +1,6 @@
-# Jobsift
+# JobSift
 
-Jobsift is a desktop job-search pipeline built with Electron. It collects roles from Jobright.ai and directly from company applicant tracking systems (ATS), scores every listing against your own criteria, and presents the results in a dashboard of accepted and rejected roles. It is a JavaScript port of an earlier Python pipeline, rebuilt as a single self-contained app with no external services.
+JobSift is a desktop job-search pipeline built with Electron. It collects roles from Jobright.ai and directly from company applicant tracking systems (ATS), scores every listing against your own criteria, and presents the results in a dashboard of accepted and rejected roles. It is a JavaScript port of an earlier Python pipeline, rebuilt as a single self-contained app with no external services.
 
 ## What it does
 
@@ -24,7 +24,7 @@ npm start
 
 On first launch the setup wizard appears. It walks you through your job titles, salary floor, work arrangement, locations, domain keywords, block lists, and ATS boards, then drops you on the dashboard. You can reopen it any time from the Configure button on the dashboard or the Settings item in the tray.
 
-Your settings are stored per user at `%APPDATA%/Jobsift/config.json` (created from the blank template in `resources/config.json` on first run). The repo copy stays empty, so your personal config is never committed.
+Your settings are stored per user at `%APPDATA%/JobSift/config.json` (created from the blank template in `resources/config.json` on first run). The repo copy stays empty, so your personal config is never committed.
 
 ## Using it
 

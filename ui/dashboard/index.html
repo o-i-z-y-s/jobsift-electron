@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Jobsift Dashboard</title>
+<title>JobSift Dashboard</title>
 <style>
   :root {
     --bg: #0f1117;
@@ -46,6 +46,16 @@
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; border: 2px solid var(--bg); }
   ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
   ::-webkit-scrollbar-corner { background: var(--bg); }
+
+  /* Spinner shown while a scrape is in progress */
+  @keyframes jobsift-spin { to { transform: rotate(360deg); } }
+  .spinner {
+    width: 15px; height: 15px; flex-shrink: 0;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: jobsift-spin 0.8s linear infinite;
+  }
 
   /* ── Drop zone ──────────────────────────────────── */
   #dropzone {
@@ -661,11 +671,14 @@
 
 <!-- ── Drop zone ─────────────────────────────────────── -->
 <div id="dropzone">
-  <h1>Jobsift</h1>
+  <h1>JobSift</h1>
   <!-- progress panel (shown during a scrape) -->
   <div id="progress-panel" style="display:none;width:100%;max-width:620px;margin:0 auto 24px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px 24px">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-      <span id="progress-msg" style="font-size:14px;font-weight:600">Starting...</span>
+      <span style="display:flex;align-items:center;gap:10px">
+        <span class="spinner"></span>
+        <span id="progress-msg" style="font-size:14px;font-weight:600">Starting...</span>
+      </span>
       <span id="progress-pct" style="font-size:13px;color:var(--muted)">0%</span>
     </div>
     <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden">
@@ -673,7 +686,10 @@
     </div>
     <!-- live activity feed so the run is not a black box -->
     <div id="progress-log" style="margin-top:14px;height:200px;overflow-y:scroll;text-align:left;font-size:12px;line-height:1.6;color:var(--muted);font-family:ui-monospace,Menlo,Consolas,monospace;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px"></div>
-    <button id="cancel-btn" onclick="cancelScrape()" style="margin-top:14px;background:none;border:1px solid var(--border);color:var(--muted);padding:6px 16px;border-radius:5px;font-size:12px;cursor:pointer">Cancel</button>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button id="cancel-btn" onclick="cancelScrape()" style="background:none;border:1px solid var(--border);color:var(--muted);padding:6px 16px;border-radius:5px;font-size:12px;cursor:pointer">Cancel Scrape</button>
+      <button id="abort-pass-btn" onclick="abortPass()" title="Skip the current Jobright pass and continue with the next" style="background:none;border:1px solid var(--border);color:var(--muted);padding:6px 16px;border-radius:5px;font-size:12px;cursor:pointer">Abort Pass</button>
+    </div>
   </div>
   <!-- empty state (no results yet) -->
   <div id="empty-state" style="text-align:center;color:var(--muted);padding:40px 0">
@@ -709,7 +725,7 @@
 <div id="dashboard">
   <header>
     <div>
-      <h1>Jobsift</h1>
+      <h1>JobSift</h1>
       <div class="meta" id="header-meta"></div>
     </div>
     <div style="display:flex;gap:8px;align-items:center">
@@ -945,24 +961,27 @@ if (window.electronAPI) {
       const log = document.getElementById('progress-log');
       if (log) log.innerHTML = '';
       const btn = document.getElementById('cancel-btn');
-      if (btn) { btn.textContent = 'Cancel'; btn.disabled = false; btn.style.opacity = '1'; }
+      if (btn) { btn.textContent = 'Cancel Scrape'; btn.disabled = false; btn.style.opacity = '1'; }
       if (errorMsg) errorMsg.style.display = 'none';
     }
     appendProgressLog(message);
   });
 
-  const _cleanupComplete = window.electronAPI.onScrapeComplete(({ outputPath, counts }) => {
+  const _cleanupComplete = window.electronAPI.onScrapeComplete(({ outputPath, counts, cancelled }) => {
     document.getElementById('progress-panel').style.display = 'none';
-    // A run that reviewed nothing (everything was a duplicate of prior runs, or
-    // nothing matched) should explain itself instead of showing a blank board.
+    // A run that reviewed nothing (cancelled early, all duplicates, or no matches)
+    // should explain itself instead of showing a blank board.
     if (counts && (counts.accepted | 0) === 0 && (counts.rejected | 0) === 0) {
       resetToDropzone();
-      document.getElementById('empty-heading').textContent = 'No new listings to review';
-      document.getElementById('empty-subtext').textContent =
-        'Everything found was already seen in a previous run (deduplicated), or nothing matched. ' +
-        'Check the activity feed counts, try a longer period, or open a previous run with Load Past Result.';
+      document.getElementById('empty-heading').textContent =
+        cancelled ? 'Run cancelled - nothing to show yet' : 'No new listings to review';
+      document.getElementById('empty-subtext').textContent = cancelled
+        ? 'The scrape was stopped before any roles were collected. A (empty) result was still saved.'
+        : 'Everything found was already seen in a previous run (deduplicated), or nothing matched. '
+          + 'Check the activity feed counts, try a longer period, or open a previous run with Load Past Result.';
       return;
     }
+    // Otherwise render the saved artifact (partial if cancelled mid-run).
     window.electronAPI.getLatestResult().then(data => { if (data) render(data); });
   });
 
@@ -1060,6 +1079,13 @@ function cancelScrape() {
   appendProgressLog('Cancelling… finishing the current request.');
 }
 
+// Skip the current Jobright pass and roll over to the next, without ending the run.
+function abortPass() {
+  if (!window.electronAPI?.abortPass) return;
+  window.electronAPI.abortPass();
+  appendProgressLog('Abort pass requested; rolling over to the next pass…');
+}
+
 function runNow() {
   if (!window.electronAPI) { showError('Electron API not available.'); return; }
   // Clear any stale message (e.g. "No past results found.") and reset the feed.
@@ -1067,7 +1093,7 @@ function runNow() {
   const log = document.getElementById('progress-log');
   if (log) log.innerHTML = '';
   const btn = document.getElementById('cancel-btn');
-  if (btn) { btn.textContent = 'Cancel'; btn.disabled = false; btn.style.opacity = '1'; }
+  if (btn) { btn.textContent = 'Cancel Scrape'; btn.disabled = false; btn.style.opacity = '1'; }
   window.electronAPI.startScrape({ daysAgo: _runPeriod, includeSeen: _includeSeen });
 }
 

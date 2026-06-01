@@ -17,13 +17,13 @@ const fs   = require('fs');
 const cfgModule  = require('./config');
 const scheduler  = require('./scheduler');
 
-// Force the app name so the userData directory is ALWAYS %APPDATA%/Jobsift,
+// Force the app name so the userData directory is ALWAYS %APPDATA%/JobSift,
 // regardless of how the app is launched. When launched as `electron .` the name
-// comes from package.json (Jobsift), but launching the script directly (e.g. some
+// comes from package.json (JobSift), but launching the script directly (e.g. some
 // VS Code debug configs) or other entry points can fall back to "Electron",
 // which would point at a different userData folder with no config. Setting it
 // explicitly here (before 'ready') keeps config and data in one place.
-app.setName('Jobsift');
+app.setName('JobSift');
 
 // ── Runtime footprint trimming ────────────────────────────────────────────────
 // This app only renders local HTML and scrapes pages in hidden windows; it has
@@ -79,6 +79,7 @@ let dashboardWin = null;
 let scrapeAbort  = null;   // AbortController | null
 let isQuitting   = false;
 let lastDaysAgo  = 7;      // last-used scan period (days); persisted in config._lastDaysAgo
+let passControl  = null;   // { abort: bool } - lets the user skip the current Jobright pass
 
 // ── Preload path ──────────────────────────────────────────────────────────────
 
@@ -111,7 +112,7 @@ function makeWin(opts = {}) {
 
 function getDashboard() {
   if (!dashboardWin || dashboardWin.isDestroyed()) {
-    dashboardWin = makeWin({ width: 1600, height: 900, minWidth: 1100, minHeight: 700, title: 'Jobsift' });
+    dashboardWin = makeWin({ width: 1600, height: 900, minWidth: 1100, minHeight: 700, title: 'JobSift' });
     dashboardWin.loadFile(path.join(__dirname, '..', 'ui', 'dashboard', 'index.html'));
   }
   return dashboardWin;
@@ -119,7 +120,7 @@ function getDashboard() {
 
 function getConfig() {
   if (!configWin || configWin.isDestroyed()) {
-    configWin = makeWin({ width: 1600, height: 900, minWidth: 1100, minHeight: 700, title: 'Jobsift - Settings' });
+    configWin = makeWin({ width: 1600, height: 900, minWidth: 1100, minHeight: 700, title: 'JobSift - Settings' });
     configWin.loadFile(path.join(__dirname, '..', 'ui', 'config', 'index.html'));
   }
   return configWin;
@@ -198,7 +199,7 @@ function setupTray() {
     : nativeImage.createEmpty();
 
   tray = new Tray(icon);
-  tray.setToolTip('Jobsift');
+  tray.setToolTip('JobSift');
   tray.setContextMenu(buildTrayMenu());
   tray.on('double-click', () => { getDashboard().show(); });
 }
@@ -301,19 +302,31 @@ async function runPipeline(options) {
   // ── Jobright (50% of progress budget) ─────────────────────────────────────
   broadcast('scrape:progress', { step: 'jobright', message: 'Launching Jobright scraper...', pct: 5 });
 
-  const jobrightRaw = await jobrightScraper.run({
-    cfg,
-    daysAgo,
-    signal: scrapeAbort.signal,
-    onProgress: (msg, pct) =>
-      broadcast('scrape:progress', {
-        step: 'jobright',
-        message: msg,
-        pct: 5 + Math.round(pct * 0.50),
-      }),
-  });
-
-  if (scrapeAbort.signal.aborted) return null;
+  // Per-source isolation: a failure in one source (e.g. a network timeout on a
+  // search-page load) must not abort the whole run and discard the other source.
+  let jobrightRaw = [];
+  passControl = { abort: false };  // reset; the Abort Pass button flips abort=true
+  try {
+    jobrightRaw = await jobrightScraper.run({
+      cfg,
+      daysAgo,
+      signal: scrapeAbort.signal,
+      passControl,
+      onProgress: (msg, pct) =>
+        broadcast('scrape:progress', {
+          step: 'jobright',
+          message: msg,
+          pct: 5 + Math.round(pct * 0.50),
+        }),
+    });
+  } catch (err) {
+    console.error('Jobright scraper failed:', err);
+    broadcast('scrape:progress', {
+      step: 'jobright',
+      message: `Jobright step failed (${err.message}); continuing with ATS results`,
+      pct: 55,
+    });
+  }
 
   fs.writeFileSync(
     path.join(rawDir(), `job-search-jobright-${ts}.json`),
@@ -328,18 +341,26 @@ async function runPipeline(options) {
   // ── ATS HTTP (13% of progress budget) ─────────────────────────────────────
   broadcast('scrape:progress', { step: 'ats', message: 'Scraping ATS boards...', pct: 57 });
 
-  const atsRaw = await atsScraper.run({
-    cfg,
-    signal: scrapeAbort.signal,
-    onProgress: (msg, pct) =>
-      broadcast('scrape:progress', {
-        step: 'ats',
-        message: msg,
-        pct: 57 + Math.round(pct * 0.13),
-      }),
-  });
-
-  if (scrapeAbort.signal.aborted) return null;
+  let atsRaw = [];
+  try {
+    atsRaw = await atsScraper.run({
+      cfg,
+      signal: scrapeAbort.signal,
+      onProgress: (msg, pct) =>
+        broadcast('scrape:progress', {
+          step: 'ats',
+          message: msg,
+          pct: 57 + Math.round(pct * 0.13),
+        }),
+    });
+  } catch (err) {
+    console.error('ATS scraper failed:', err);
+    broadcast('scrape:progress', {
+      step: 'ats',
+      message: `ATS step failed (${err.message}); continuing with what was collected`,
+      pct: 70,
+    });
+  }
 
   fs.writeFileSync(
     path.join(rawDir(), `job-search-ats-http-${ts}.json`),
@@ -405,8 +426,6 @@ async function runPipeline(options) {
   broadcast('scrape:progress', { step: 'eval', message: 'Running scoring engine...', pct: 77 });
   const evaluated = await evalEngine.run(mergePayload, cfg);
 
-  if (scrapeAbort.signal.aborted) return null;
-
   // ── Save output ────────────────────────────────────────────────────────────
   broadcast('scrape:progress', { step: 'save', message: 'Saving results...', pct: 95 });
   const outputPath = path.join(evaluatedDir(), `job-search-${ts}.json`);
@@ -442,12 +461,14 @@ async function triggerScrape(options) {
   getDashboard().show();
   try {
     const result = await runPipeline(options);
-    if (scrapeAbort && scrapeAbort.signal.aborted) {
-      // Cancelled: tell the UI so it can leave the progress view, rather than
-      // hanging on the last progress message.
+    // The pipeline always saves an artifact now, even on cancel (it processes
+    // whatever was collected). So if we have a result, surface it; only fall back
+    // to the plain cancelled view if no artifact was produced.
+    if (result) {
+      const aborted = scrapeAbort && scrapeAbort.signal.aborted;
+      broadcast('scrape:complete', { ...result, cancelled: !!aborted });
+    } else if (scrapeAbort && scrapeAbort.signal.aborted) {
       broadcast('scrape:cancelled', {});
-    } else if (result) {
-      broadcast('scrape:complete', result);
     }
   } catch (err) {
     // Not-signed-in is surfaced as a friendly prompt via 'auth:required', not a
@@ -476,6 +497,8 @@ function registerIpc() {
   // Awaiting here would hang the renderer's invoke call for the full pipeline duration.
   ipcMain.handle('scrape:start',  (_e, options) => { triggerScrape(options); });
   ipcMain.handle('scrape:cancel', () => { if (scrapeAbort) scrapeAbort.abort(); });
+  // Skip the current Jobright pass (rolls over to the next), without ending the run.
+  ipcMain.handle('scrape:abortPass', () => { if (passControl) passControl.abort = true; });
 
   // Results
   ipcMain.handle('results:getLatest', () => {

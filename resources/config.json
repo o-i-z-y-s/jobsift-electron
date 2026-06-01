@@ -60,7 +60,7 @@
     "min_match_pct": 60,
     "scroll_pause_ms": 1800,
     "slow_mo": 25,
-    "detail_workers": 4
+    "detail_workers": 6
   },
   "domain_scoring": {
     "tier5": [],

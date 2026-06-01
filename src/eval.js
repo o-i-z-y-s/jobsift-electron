@@ -47,7 +47,7 @@ async function geocode(query) {
   try {
     const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1&countrycodes=us`;
     const r = await fetch(url, {
-      headers: { 'User-Agent': 'Jobsift-electron/0.1 (job search automation)' },
+      headers: { 'User-Agent': 'JobSift-electron/0.1 (job search automation)' },
       signal: AbortSignal.timeout(8000),
     });
     if (r.status !== 200) { cache[key] = null; return null; }
