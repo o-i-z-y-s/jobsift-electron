@@ -8,7 +8,7 @@
 
 const {
   app, BrowserWindow, Tray, Menu, nativeImage,
-  ipcMain, net,
+  ipcMain, net, session,
 } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
@@ -16,6 +16,19 @@ const fs   = require('fs');
 
 const cfgModule  = require('./config');
 const scheduler  = require('./scheduler');
+
+// ── Runtime footprint trimming ────────────────────────────────────────────────
+// This app only renders local HTML and scrapes pages in hidden windows; it has
+// no use for GPU acceleration or Chromium's privacy-sandbox databases. Disabling
+// them keeps the userData directory small: it drops the GPUCache,
+// DawnGraphiteCache and DawnWebGPUCache shader caches (~1.6 MB) and prevents the
+// DIPS, Trust Token, Shared Storage and Shared Dictionary stores from being
+// created. Must run before app 'ready', so it lives here at module load.
+app.disableHardwareAcceleration();
+app.commandLine.appendSwitch(
+  'disable-features',
+  'DIPS,PrivateStateTokens,TrustTokens,SharedStorageAPI,CompressionDictionaryTransport',
+);
 
 // ── Directory helpers ─────────────────────────────────────────────────────────
 
@@ -46,6 +59,7 @@ let configWin    = null;
 let dashboardWin = null;
 let scrapeAbort  = null;   // AbortController | null
 let isQuitting   = false;
+let lastDaysAgo  = 7;      // last-used scan period (days); persisted in config._lastDaysAgo
 
 // ── Preload path ──────────────────────────────────────────────────────────────
 
@@ -78,7 +92,7 @@ function makeWin(opts = {}) {
 
 function getDashboard() {
   if (!dashboardWin || dashboardWin.isDestroyed()) {
-    dashboardWin = makeWin({ width: 1280, height: 900, title: 'Jobsift' });
+    dashboardWin = makeWin({ width: 1600, height: 900, minWidth: 1100, minHeight: 700, title: 'Jobsift' });
     dashboardWin.loadFile(path.join(__dirname, '..', 'ui', 'dashboard', 'index.html'));
   }
   return dashboardWin;
@@ -86,7 +100,7 @@ function getDashboard() {
 
 function getConfig() {
   if (!configWin || configWin.isDestroyed()) {
-    configWin = makeWin({ width: 960, height: 720, title: 'Jobsift - Settings' });
+    configWin = makeWin({ width: 1600, height: 900, minWidth: 1100, minHeight: 700, title: 'Jobsift - Settings' });
     configWin.loadFile(path.join(__dirname, '..', 'ui', 'config', 'index.html'));
   }
   return configWin;
@@ -106,14 +120,29 @@ function getLogin() {
     });
     loginWin.loadURL('https://jobright.ai/');
 
-    // Auto-hide once sign-in completes (URL leaves the /login path)
-    loginWin.webContents.on('did-navigate', (_e, url) => {
-      if (url.includes('jobright.ai') && !url.toLowerCase().includes('login')) {
-        setTimeout(() => {
+    // Detect a successful login by polling the session cookies while the window
+    // is open. Jobright is an SPA whose post-login navigation may be in-page or
+    // a full page load, so watching URL transitions is unreliable. Polling the
+    // actual session is robust regardless of how the redirect happens. Once a
+    // session exists we hide the window, surface the dashboard, and notify the
+    // renderer so its UI flips to the signed-in state.
+    let _loginPoll = null;
+    const stopLoginPoll = () => { if (_loginPoll) { clearInterval(_loginPoll); _loginPoll = null; } };
+    const startLoginPoll = () => {
+      stopLoginPoll();
+      _loginPoll = setInterval(async () => {
+        if (!loginWin || loginWin.isDestroyed()) { stopLoginPoll(); return; }
+        if (await checkLoggedIn()) {
+          stopLoginPoll();
           if (loginWin && !loginWin.isDestroyed()) loginWin.hide();
-        }, 1200);
-      }
-    });
+          getDashboard().show();
+          broadcast('auth:loginComplete', {});
+        }
+      }, 1500);
+    };
+    loginWin.on('show', startLoginPoll);
+    loginWin.on('hide', stopLoginPoll);
+    loginWin.on('closed', () => { stopLoginPoll(); loginWin = null; });
   }
   return loginWin;
 }
@@ -138,11 +167,12 @@ function buildTrayMenu() {
     {
       label:   running ? 'Running... (click to cancel)' : 'Run Now',
       click:   running ? () => { if (scrapeAbort) scrapeAbort.abort(); }
-                       : () => triggerScrape({ daysAgo: 7 }),
+                       : () => triggerScrape({ daysAgo: lastDaysAgo }),
     },
     { type: 'separator' },
     { label: 'Open Dashboard', click: () => { getDashboard().show(); } },
     { label: 'Settings',       click: () => { getConfig().show();    } },
+    { label: 'Sign In',        click: () => { getLogin().show();     } },
     { type: 'separator' },
     { label: 'Quit', click: () => { isQuitting = true; app.quit(); } },
   ]);
@@ -156,16 +186,31 @@ function refreshTrayMenu() {
 
 // ── Session / login check ─────────────────────────────────────────────────────
 
+// Cookie names that clearly indicate an authenticated session.
+const AUTH_COOKIE_RE = /token|session|auth|sid|jwt|login|credential|user|access|refresh/i;
+// Known analytics/marketing cookies that are set even when signed out and must
+// NOT be treated as a session.
+const ANALYTICS_COOKIE_RE = /^(_ga|_gid|_gat|_gcl|_fbp|_fbc|_hj|ajs_|amplitude|mp_|_mkto|__stripe|_clck|_clsk|_uetsid|_uetvid|optimizely|hubspot|__hs|intercom)/i;
+
 async function checkLoggedIn() {
+  // Check for persisted Jobright session cookies in the default session.
+  // Reliable across restarts (Electron stores cookies on disk in userData) and
+  // avoids the SPA redirect problem that makes net.fetch unreliable.
+  //
+  // We treat the user as signed in if there is a non-expired cookie that is
+  // either named like a session/auth token OR is httpOnly (real session cookies
+  // are almost always httpOnly), while explicitly ignoring known analytics
+  // cookies. This is permissive enough to avoid false negatives across cookie
+  // naming schemes, but still rejects a page that only set tracking cookies.
   try {
-    // net.fetch uses the default session (with Jobright cookies) in the main process.
-    // HEAD is unreliable on SPA CDN frontends - use GET, cap response body at start.
-    // Follow redirects and check the final URL; a 'login' path means session expired.
-    const r = await net.fetch('https://jobright.ai/', {
-      method: 'GET',
-      headers: { 'Accept': 'text/html' },
+    const cookies = await session.defaultSession.cookies.get({ domain: 'jobright.ai' });
+    const now = Date.now() / 1000;
+    return cookies.some(c => {
+      const live = !c.expirationDate || c.expirationDate > now;
+      if (!live) return false;
+      if (ANALYTICS_COOKIE_RE.test(c.name)) return false;
+      return c.httpOnly === true || AUTH_COOKIE_RE.test(c.name);
     });
-    return !r.url.toLowerCase().includes('login');
   } catch {
     return false;
   }
@@ -204,7 +249,8 @@ async function runPipeline(options) {
   const loggedIn = await checkLoggedIn();
   if (!loggedIn) {
     getLogin().show();
-    throw new Error('Not signed in to Jobright.ai - please log in first.');
+    broadcast('auth:required', {});
+    throw new Error('__AUTH_REQUIRED__');  // sentinel: handled as a prompt, not an error
   }
 
   // ── Jobright (50% of progress budget) ─────────────────────────────────────
@@ -341,6 +387,10 @@ async function runPipeline(options) {
 
 async function triggerScrape(options) {
   if (scrapeAbort) return;  // already running
+  if (options && typeof options.daysAgo === 'number') {
+    lastDaysAgo = options.daysAgo;
+    try { const c = cfgModule.load(); c._lastDaysAgo = lastDaysAgo; cfgModule.save(c); } catch { /* ignore */ }
+  }
   scrapeAbort = new AbortController();
   refreshTrayMenu();
   getDashboard().show();
@@ -350,7 +400,11 @@ async function triggerScrape(options) {
       broadcast('scrape:complete', result);
     }
   } catch (err) {
-    broadcast('scrape:error', { message: err.message });
+    // Not-signed-in is surfaced as a friendly prompt via 'auth:required', not a
+    // hard scrape failure, so we suppress the generic error in that case.
+    if (err.message !== '__AUTH_REQUIRED__') {
+      broadcast('scrape:error', { message: err.message });
+    }
   } finally {
     scrapeAbort = null;
     refreshTrayMenu();
@@ -365,7 +419,10 @@ function registerIpc() {
   ipcMain.handle('config:save', (_e, data) => cfgModule.save(data));
 
   // Scrape lifecycle
-  ipcMain.handle('scrape:start',  (_e, options) => triggerScrape(options));
+  // Fire-and-forget: triggerScrape is long-running (full pipeline).
+  // The renderer does NOT await the resolved value — progress arrives via events.
+  // Awaiting here would hang the renderer's invoke call for the full pipeline duration.
+  ipcMain.handle('scrape:start',  (_e, options) => { triggerScrape(options); });
   ipcMain.handle('scrape:cancel', () => { if (scrapeAbort) scrapeAbort.abort(); });
 
   // Results
@@ -415,6 +472,19 @@ function registerIpc() {
     setupScheduler(schedule);
   });
 
+  // Window navigation
+  ipcMain.handle('config:openWindow', () => { getConfig().show(); });
+  ipcMain.handle('dashboard:open',    () => { getDashboard().show(); });
+
+  // Run period (persisted scan window in days)
+  ipcMain.handle('run:getPeriod', () => lastDaysAgo);
+  ipcMain.handle('run:setPeriod', (_e, days) => {
+    if (typeof days === 'number' && days > 0) {
+      lastDaysAgo = days;
+      try { const c = cfgModule.load(); c._lastDaysAgo = days; cfgModule.save(c); } catch { /* ignore */ }
+    }
+  });
+
   // App
   ipcMain.on('app:getVersion', (e) => { e.returnValue = app.getVersion(); });
   ipcMain.handle('app:checkForUpdates', () => autoUpdater.checkForUpdatesAndNotify());
@@ -426,24 +496,54 @@ function setupScheduler(schedule) {
   scheduler.setup(schedule, triggerScrape);
 }
 
+// ── Crash safety ────────────────────────────────────────────────────────────────
+// Surface unexpected errors instead of dying silently. A scraper throw outside
+// runPipeline's try, or a rejected promise with no handler, lands here.
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err);
+  try { broadcast('scrape:error', { message: 'Unexpected error: ' + (err?.message || err) }); } catch { /* ignore */ }
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection:', reason);
+});
+
+// ── Single-instance lock ──────────────────────────────────────────────────────
+// Prevent a second copy from spawning a duplicate tray and scheduler. If we are
+// not the primary instance, quit immediately; the primary focuses its dashboard.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    const win = getDashboard();
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+  });
+}
+
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
   setupTray();
   registerIpc();
 
-  // Restore scheduler
+  // Restore scheduler + last-used scan period
   try {
     const cfg = cfgModule.load();
     if (cfg._scheduler?.enabled) setupScheduler(cfg._scheduler);
+    if (typeof cfg._lastDaysAgo === 'number' && cfg._lastDaysAgo > 0) lastDaysAgo = cfg._lastDaysAgo;
   } catch { /* first run - no config yet */ }
 
-  // Show login or dashboard on startup
-  const loggedIn = await checkLoggedIn();
-  if (loggedIn) {
+  // Decide the landing window. If the user has not completed setup yet
+  // (fresh config.json copied from the empty template, or setup_complete is
+  // not true), present the Settings window — its UI auto-shows the setup
+  // wizard whenever setup_complete !== true. Otherwise land on the dashboard.
+  let configured = false;
+  try { configured = cfgModule.load().setup_complete === true; } catch { configured = false; }
+  if (configured) {
     getDashboard().show();
   } else {
-    getLogin().show();
+    getConfig().show();
   }
 });
 

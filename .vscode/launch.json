@@ -1,0 +1,16 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Start Jobsift",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "${workspaceFolder}/node_modules/electron/dist/electron.exe",
+      "runtimeArgs": ["."],
+      "cwd": "${workspaceFolder}",
+      "stopOnEntry": false,
+      "sourceMaps": false,
+      "outputCapture": "std"
+    }
+  ]
+}

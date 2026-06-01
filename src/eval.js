@@ -118,7 +118,7 @@ function normalizeSalaryDisplay(s) {
     const v = parseFloat(num.replace(/,/g, '')) * mult;
     return isNaN(v) ? tok : `$${Math.round(v).toLocaleString()}`;
   });
-  s = s.replace(/(\s*[-–—]\s*)(\d[\d,]+)/g, '$1\$$2');
+  s = s.replace(/(\s*[-–—]\s*)(\d[\d,]+)/g, '$1$$$2');
   return s;
 }
 
@@ -475,8 +475,38 @@ async function run(mergePayload, cfg) {
     return null;
   }
 
-  // We'll need to geocode hybrid/onsite locations. Pre-collect unique targets.
-  // Geocoding happens inline per-role (cached after first call).
+  // ── Pre-batch geocoding ────────────────────────────────────────────────────
+  // Collect every unique non-remote location that will need a radius check and
+  // geocode them upfront before the eval loop. This deduplicates locations across
+  // roles and tracks so each unique string is only geocoded once even when the
+  // same city appears in hundreds of listings. The eval loop then hits only the
+  // warm in-memory cache — no per-role network round trips.
+  const geoTargets = new Set(
+    Object.values(tracks)
+      .filter(t => t.target_location)
+      .map(t => t.target_location),
+  );
+
+  const locationsToGeocode = new Set();
+  for (const r of allResults) {
+    const wt = (r.work_type || '').toLowerCase();
+    if (wt.includes('remote')) continue;  // remote roles skip geo check
+    const loc = normalizeLocationDisplay((r.location || '').trim());
+    if (loc) locationsToGeocode.add(loc);
+  }
+  // Also pre-warm all track target locations
+  for (const t of geoTargets) locationsToGeocode.add(t);
+
+  if (locationsToGeocode.size > 0) {
+    console.log(`  Pre-geocoding ${locationsToGeocode.size} unique locations...`);
+    for (const loc of locationsToGeocode) {
+      // geocode() checks cache first — only hits network for new entries
+      const parts = loc.split(/[;•\/]/).map(p => p.trim()).filter(Boolean);
+      for (const part of parts) await geocode(part);
+    }
+    saveGeocache();
+    console.log(`  Geocoding complete.`);
+  }
 
   for (let idx = 0; idx < allResults.length; idx++) {
     const r = allResults[idx];

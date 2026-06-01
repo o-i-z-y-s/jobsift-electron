@@ -79,7 +79,10 @@ function stripHtml(h) {
 
 // ── Salary extraction ─────────────────────────────────────────────────────────
 
-const SAL_RE   = /\$[\d,]+(?:\.\d+)?[KkMm]?(?:\s*[-–—]\s*\$[\d,]+(?:\.\d+)?[KkMm]?)?(?:\s*\/\s*(?:yr|year|hour|hr))?/gi;
+// SAL_RE: no /g flag — only ever used with .exec() (single match per call).
+// A global flag on a module-level regex makes .exec() stateful across calls.
+const SAL_RE   = /\$[\d,]+(?:\.\d+)?[KkMm]?(?:\s*[-–—]\s*\$[\d,]+(?:\.\d+)?[KkMm]?)?(?:\s*\/\s*(?:yr|year|hour|hr))?/i;
+// DOLLAR_RE: /gi required — used with String.matchAll() which needs the global flag.
 const DOLLAR_RE = /\$[\d,]+(?:\.\d+)?[KkMm]?/gi;
 
 function parseDollar(token) {
@@ -109,7 +112,6 @@ function amountsToSalary(amounts) {
 function extractSalary(text) {
   if (!text) return '';
   const m = SAL_RE.exec(text);
-  SAL_RE.lastIndex = 0;
   return m ? m[0] : '';
 }
 
@@ -158,7 +160,6 @@ function ghSalary(metaList, contentText) {
     return `$${contentAmounts[0].toLocaleString()} - $${contentAmounts[contentAmounts.length - 1].toLocaleString()}`;
   }
   const m2 = SAL_RE.exec(contentText);
-  SAL_RE.lastIndex = 0;
   if (m2) return m2[0];
   if (contentAmounts.length) return `$${contentAmounts[0].toLocaleString()}`;
   if (unique.length) return `$${unique[0].toLocaleString()}`;
@@ -323,10 +324,10 @@ async function htmlSalaryFallback(jobUrl) {
   return '';
 }
 
-async function scrapeGreenhouse(company, board, titleMatches) {
+async function scrapeGreenhouse(company, board, titleMatches, signal = null) {
   let resp;
   try {
-    resp = await fetchRetry(`${GH_API}/${board}/jobs?content=true`);
+    resp = await fetchRetry(`${GH_API}/${board}/jobs?content=true`, {}, 3, signal);
   } catch (err) {
     console.log(`  [GH] ${company} (${board}): network error - ${err.message}`);
     return [];
@@ -394,10 +395,10 @@ async function scrapeGreenhouse(company, board, titleMatches) {
 
 // ── Lever ─────────────────────────────────────────────────────────────────────
 
-async function scrapeLever(company, slug, titleMatches) {
+async function scrapeLever(company, slug, titleMatches, signal = null) {
   let resp;
   try {
-    resp = await fetchRetry(`https://api.lever.co/v0/postings/${slug}?mode=json&limit=500`);
+    resp = await fetchRetry(`https://api.lever.co/v0/postings/${slug}?mode=json&limit=500`, {}, 3, signal);
   } catch (err) {
     console.log(`  [LV] ${company} (${slug}): network error - ${err.message}`);
     return [];
@@ -515,7 +516,7 @@ async function ashbyHtmlFallback(slug) {
   } catch { return []; }
 }
 
-async function scrapeAshby(company, slug, titleMatches) {
+async function scrapeAshby(company, slug, titleMatches, signal = null) {
   let postings = [];
   let usedFallback = false;
 
@@ -529,7 +530,6 @@ async function scrapeAshby(company, slug, titleMatches) {
         query:         ASHBY_LIST_QUERY,
       }),
     });
-    r.raise_for_status?.();
     const gql = await r.json();
     const boardNode = gql?.data?.jobBoardWithTeams;
     if (boardNode) {
@@ -716,7 +716,7 @@ async function fetchWdDescription(baseUrl, tenant, site, jobId, extPath) {
   return {};
 }
 
-async function scrapeWorkday(company, baseUrl, tenant, site, searchTerms, titleMatches) {
+async function scrapeWorkday(company, baseUrl, tenant, site, searchTerms, titleMatches, signal = null) {
   const searchUrl = `${baseUrl}/wday/cxs/${tenant}/${site}/jobs`;
   const allJobs   = [];
 
@@ -724,12 +724,13 @@ async function scrapeWorkday(company, baseUrl, tenant, site, searchTerms, titleM
     let offset = 0;
     while (true) {
       let r;
+      if (signal?.aborted) break;
       try {
         r = await fetchRetry(searchUrl, {
           method:  'POST',
           headers: { 'Content-Type': 'application/json' },
           body:    JSON.stringify({ appliedFacets: {}, limit: 20, offset, searchText: keyword }),
-        });
+        }, 3, signal);
       } catch (err) {
         console.log(`  [WD] ${company}: network error - ${err.message}`);
         break;
@@ -828,9 +829,9 @@ function hashCode(s) {
 }
 
 // Workday URL auto-discovery
-async function discoverWorkdayUrl(company, hintUrl) {
+async function discoverWorkdayUrl(company, hintUrl, signal = null) {
   try {
-    const r = await fetchRetry(hintUrl, { redirect: 'follow' });
+    const r = await fetchRetry(hintUrl, { redirect: 'follow' }, 3, signal);
     const searchText = r.url + '\n' + (await r.text()).slice(0, 200000);
     const bm = WD_BASE_RE.exec(searchText);
     if (!bm) { console.log(`  [WD-discover] ${company}: no Workday URL found`); return null; }
@@ -896,7 +897,7 @@ async function run({ cfg, signal, onProgress }) {
   console.log('\n-- Greenhouse boards --');
   for (const [company, board] of Object.entries(GREENHOUSE)) {
     if (signal?.aborted) break;
-    const results = await scrapeGreenhouse(company, board, titleMatches);
+    const results = await scrapeGreenhouse(company, board, titleMatches, signal);
     allFound.push(...results);
     tick(`GH: ${company}`);
     await sleep(500);
@@ -906,7 +907,7 @@ async function run({ cfg, signal, onProgress }) {
   console.log('\n-- Lever boards --');
   for (const [company, slug] of Object.entries(LEVER)) {
     if (signal?.aborted) break;
-    const results = await scrapeLever(company, slug, titleMatches);
+    const results = await scrapeLever(company, slug, titleMatches, signal);
     allFound.push(...results);
     tick(`LV: ${company}`);
     await sleep(500);
@@ -916,12 +917,11 @@ async function run({ cfg, signal, onProgress }) {
   console.log('\n-- Ashby boards --');
   for (const [company, slug] of Object.entries(ASHBY)) {
     if (signal?.aborted) break;
-    const results = await scrapeAshby(company, slug, titleMatches);
+    const results = await scrapeAshby(company, slug, titleMatches, signal);
     allFound.push(...results);
     tick(`AS: ${company}`);
     await sleep(500);
   }
-
 
   // ── Workday ─────────────────────────────────────────────────────────────────
   const wdCache = loadWdCache();
@@ -936,7 +936,7 @@ async function run({ cfg, signal, onProgress }) {
     if (wdCache[company]) {
       wdResolved.push([company, wdCache[company]]);
     } else {
-      const info = await discoverWorkdayUrl(company, hintUrl);
+      const info = await discoverWorkdayUrl(company, hintUrl, signal);
       if (info) { wdCache[company] = info; wdResolved.push([company, info]); }
       await sleep(1000);
     }
@@ -948,7 +948,7 @@ async function run({ cfg, signal, onProgress }) {
   for (const [company, info] of wdResolved) {
     if (signal?.aborted) break;
     const results = await scrapeWorkday(
-      company, info.base_url, info.tenant, info.site, WD_TERMS, titleMatches,
+      company, info.base_url, info.tenant, info.site, WD_TERMS, titleMatches, signal,
     );
     allFound.push(...results);
     tick(`WD: ${company}`);

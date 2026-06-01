@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Automated job search pipeline",
   "main": "src/main.js",
-  "author": "",
+  "author": "o-i-z-y-s",
   "license": "MIT",
   "scripts": {
     "start": "electron .",

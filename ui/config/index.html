@@ -13,6 +13,14 @@
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; font-size: 14px; }
 
+  /* Scrollbars themed to the app palette */
+  * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; border: 2px solid var(--bg); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+  ::-webkit-scrollbar-corner { background: var(--bg); }
+
   /* ── Layout ── */
   header { background: var(--surface); border-bottom: 1px solid var(--border);
            padding: 14px 24px; display: flex; align-items: center; gap: 16px; position: sticky; top: 0; z-index: 100; }
@@ -148,13 +156,13 @@
   #toast.err { background: var(--danger); }
 
   /* ── Setup Wizard ── */
-  #wizard { display:none; max-width:720px; margin:60px auto; padding:0 24px 60px; font-size:15px; }
-  .wiz-progress { display:flex; align-items:center; gap:10px; margin-bottom:36px; }
+  #wizard { display:none; max-width:1120px; margin:auto; padding:36px; font-size:15px; }
+  .wiz-progress { display:flex; align-items:center; gap:10px; margin-bottom:18px; }
   .wiz-dot { width:10px; height:10px; border-radius:50%; background:var(--border); transition:background .2s; flex-shrink:0; }
   .wiz-dot.active { background:var(--accent); }
   .wiz-dot.done   { background:var(--green); }
   .wiz-step-label { font-size:13px; color:var(--muted); }
-  .wiz-card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:36px 40px; display:flex; flex-direction:column; height:640px; overflow:hidden; }
+  .wiz-card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:36px 40px; display:flex; flex-direction:column; height:calc(100vh - 170px); min-height:520px; max-height:820px; overflow:hidden; }
   .wiz-step { display:flex; flex-direction:column; flex:1; overflow-y:auto; }
   .wiz-card h2 { font-size:22px; margin-bottom:10px; }
   .wiz-card .wiz-sub { color:var(--muted); font-size:14px; line-height:1.6; margin-bottom:28px; }
@@ -774,7 +782,7 @@
       <div class="wiz-nav">
         <button class="btn-wiz-secondary" onclick="wizGo(6)">&larr; Back</button>
         <div class="spacer"></div>
-        <button class="btn-wiz-primary" onclick="wizFinish()">Save &amp; Open Full Config &rarr;</button>
+        <button class="btn-wiz-primary" onclick="wizFinish()">Save &amp; Continue &rarr;</button>
       </div>
     </div>
 
@@ -1982,23 +1990,37 @@ function _wizApplyToConfig() {
   CONFIG.setup_complete = true;
 }
 
-function wizFinish() {
-  _wizApplyToConfig();
-  // Save via normal flow, then reload to show full UI
-  const data = CONFIG;
-  setStatus('Saving…', '');
-  window.electronAPI.saveConfig(data)
-    .then(() => { window.location.reload(); })
-    .catch(e  => { toast('Save failed: ' + e.message, true); setStatus('Error', 'err'); });
-}
-
-function wizSkip() {
-  CONFIG.setup_complete = true;
+// Swap this window from the wizard to the full config UI. Done in-place (no
+// reload) so the window is ready to show the full settings whenever the user
+// later presses Configure from the dashboard.
+function _revealFullConfig() {
   document.getElementById('wizard').style.display = 'none';
   document.querySelector('nav').style.display = '';
   document.querySelectorAll('.tab').forEach(t => t.style.display = '');
   showTab('tracks', document.querySelector('nav button'));
   render();
+}
+
+function wizFinish() {
+  _wizApplyToConfig();
+  setStatus('Saving…', '');
+  window.electronAPI.saveConfig(CONFIG)
+    .then(() => {
+      // Prepare this window's full config view behind the scenes, then send the
+      // user to the dashboard and hide this window. Only the dashboard is shown;
+      // the dashboard's Configure button reopens this window on full settings.
+      _revealFullConfig();
+      window.electronAPI?.openDashboard?.();
+      window.close();
+    })
+    .catch(e  => { toast('Save failed: ' + e.message, true); setStatus('Error', 'err'); });
+}
+
+function wizSkip() {
+  CONFIG.setup_complete = true;
+  // Persist the skip so the wizard is not presented again on next launch.
+  window.electronAPI?.saveConfig?.(CONFIG);
+  _revealFullConfig();
 }
 
 </script>

@@ -33,14 +33,6 @@ function makeHiddenWindow() {
   });
 }
 
-/** Wait for did-finish-load on win, or timeout. */
-function waitLoad(win, timeout = 30000) {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error('Navigation timeout')), timeout);
-    win.webContents.once('did-finish-load', () => { clearTimeout(t); resolve(); });
-  });
-}
-
 /** Poll until querySelector succeeds or timeout. */
 async function waitSelector(win, selector, timeout = 10000) {
   const deadline = Date.now() + timeout;
@@ -193,7 +185,7 @@ async function collectListingUrls(win, minPct, seen, cardExcludeRe, scrollPauseM
         return cards.map(card => {
           const link = card.querySelector(${JSON.stringify(SEL_LINK)});
           const href = link ? link.getAttribute('href') : '';
-          const jid  = href ? href.replace(/\\/$/, '').split('/').pop() : '';
+          const jid  = href ? href.split('?')[0].split('#')[0].replace(/\\/$/, '').split('/').pop() : '';
           const scoreEl = card.querySelector(${JSON.stringify(SEL_SCORE)});
           const pctRaw  = scoreEl ? scoreEl.innerText.trim() : '';
           const pct     = /^\\d+$/.test(pctRaw) ? parseInt(pctRaw, 10) : null;
@@ -290,8 +282,10 @@ async function extractDetail(win, item) {
   const record = { ...item, ...empty };
 
   try {
+    // loadURL resolves on did-finish-load and rejects on did-fail-load, so the
+    // load is already complete here. Readiness of SPA content is handled by the
+    // waitSelector poll below.
     await win.loadURL(item.url);
-    await waitLoad(win, 30000);
     const h1Found = await waitSelector(win, 'h1', 10000);
     if (!h1Found) throw new Error('h1 not found');
     await sleep(300);
@@ -320,7 +314,7 @@ async function extractDetail(win, item) {
         const salary = metaItems.find(t => /\\$/.test(t)) || null;
 
         function getLabelSection(headingText) {
-          const h2 = [...document.querySelectorAll('h2.index_label__MLcbM')]
+          const h2 = [...document.querySelectorAll('h2[class*="index_label"]')]
             .find(h => h.innerText.trim() === headingText);
           if (!h2) return null;
           return h2.parentElement?.nextElementSibling?.innerText?.trim() || null;
@@ -349,7 +343,7 @@ async function extractDetail(win, item) {
           .find(a => a.textContent.includes('Original Job Post'));
         const ats_url = atsLink ? atsLink.getAttribute('href') : null;
 
-        const _firstH2 = document.querySelector('h2.index_label__MLcbM');
+        const _firstH2 = document.querySelector('h2[class*="index_label"]');
         const _bodyContainer = _firstH2
           ? (_firstH2.parentElement?.parentElement || _firstH2.parentElement)
           : (document.querySelector('article') || document.querySelector('main'));
@@ -407,18 +401,28 @@ async function fetchDetailsPool(listings, nWorkers, signal, onTick) {
   let closed = 0, done = 0;
 
   async function workerLoop(win) {
-    while (true) {
-      if (signal?.aborted) break;
-      const idx = nextIdx++;
-      if (idx >= listings.length) break;
-      const detail = await extractDetail(win, listings[idx]);
-      detail.search_pass = listings[idx].search_pass;
-      results[idx] = detail;
-      done++;
-      if (onTick) onTick(done, listings.length, detail);
-      if (detail.is_closed) closed++;
+    try {
+      while (true) {
+        if (signal?.aborted) break;
+        const idx = nextIdx++;
+        if (idx >= listings.length) break;
+        try {
+          const detail = await extractDetail(win, listings[idx]);
+          detail.search_pass = listings[idx].search_pass;
+          results[idx] = detail;
+          done++;
+          if (onTick) onTick(done, listings.length, detail);
+          if (detail.is_closed) closed++;
+        } catch (err) {
+          // Record as error rather than crashing the whole pool
+          console.error(`    Worker error on ${listings[nextIdx - 1]?.jid}: ${err.message}`);
+          done++;
+        }
+      }
+    } finally {
+      // Always destroy the window, even if an unexpected error escapes the inner try
+      if (!win.isDestroyed()) win.destroy();
     }
-    win.destroy();
   }
 
   await Promise.all(workers.map(workerLoop));
@@ -436,8 +440,8 @@ async function runSearch(searchCfg, minPct, scrollPauseMs, nWorkers, cardExclude
   const win = makeHiddenWindow();
 
   try {
+    // loadURL already resolves once the page has finished loading.
     await win.loadURL(searchCfg.url);
-    await waitLoad(win, 30000);
     await sleep(2500);
 
     // Login guard

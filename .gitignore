@@ -1,0 +1,9 @@
+node_modules/
+dist/
+out/
+.fuse_hidden*
+*.log
+.DS_Store
+Thumbs.db
+/node_modules
+/node_modules/electron

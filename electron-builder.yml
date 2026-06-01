@@ -8,27 +8,28 @@ files:
   - src/**
   - ui/**
   - assets/**
+  - resources/**
   - package.json
 
 win:
   target:
     - target: nsis
       arch: [x64]
-  icon: assets/icon.ico
+  icon: assets/jobsift-icon.ico
 
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
-  installerIcon: assets/icon.ico
-  uninstallerIcon: assets/icon.ico
+  installerIcon: assets/jobsift-icon.ico
+  uninstallerIcon: assets/jobsift-icon.ico
 
 mac:
   target:
     - target: dmg
-  icon: assets/icon.icns
+  icon: assets/jobsift-icon.icns
   category: public.app-category.productivity
 
 publish:
   provider: github
-  owner: GITHUB_OWNER
+  owner: o-i-z-y-s
   repo: jobsift-electron
