@@ -17,6 +17,14 @@ const fs   = require('fs');
 const cfgModule  = require('./config');
 const scheduler  = require('./scheduler');
 
+// Force the app name so the userData directory is ALWAYS %APPDATA%/Jobsift,
+// regardless of how the app is launched. When launched as `electron .` the name
+// comes from package.json (Jobsift), but launching the script directly (e.g. some
+// VS Code debug configs) or other entry points can fall back to "Electron",
+// which would point at a different userData folder with no config. Setting it
+// explicitly here (before 'ready') keeps config and data in one place.
+app.setName('Jobsift');
+
 // ── Runtime footprint trimming ────────────────────────────────────────────────
 // This app only renders local HTML and scrapes pages in hidden windows; it has
 // no use for GPU acceleration or Chromium's privacy-sandbox databases. Disabling
@@ -29,24 +37,35 @@ app.commandLine.appendSwitch(
   'disable-features',
   'DIPS,PrivateStateTokens,TrustTokens,SharedStorageAPI,CompressionDictionaryTransport',
 );
+// Stop the on-disk caches from growing at all: no GPU shader disk cache, and an
+// effectively zero-size HTTP disk cache. Combined with disableHardwareAcceleration
+// this prevents the GPUCache / DawnGraphiteCache / DawnWebGPUCache / Cache / Code
+// Cache directories from accumulating data.
+app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+app.commandLine.appendSwitch('disk-cache-size', '0');
 
 // ── Directory helpers ─────────────────────────────────────────────────────────
 
 function evaluatedDir() {
   return path.join(app.getPath('userData'), 'Scrapes', 'Evaluated Scrapes');
 }
+// Single intermediate folder for both the raw per-source dumps and the transient
+// merged file (the merge file is deleted on a successful run). Consolidated from
+// the former separate "Raw" and "Raw Scrape Staging" folders.
 function stagingDir() {
   return path.join(app.getPath('userData'), 'Scrapes', 'Raw Scrape Staging');
 }
 function rawDir() {
-  return path.join(app.getPath('userData'), 'Scrapes', 'Raw');
+  return stagingDir();
 }
 
 function timestamp() {
-  // Format: YYYY-MM-DD_HH-MM  (matches Python pipeline convention)
+  // Format: YYYY-MM-DD_HH-MM in the user's LOCAL time zone (not UTC), so the
+  // filename matches the wall-clock time the run happened.
   const now = new Date();
-  const d = now.toISOString();
-  return d.slice(0, 10) + '_' + d.slice(11, 16).replace(':', '-');
+  const p = n => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}` +
+         `_${p(now.getHours())}-${p(now.getMinutes())}`;
 }
 
 const SCAN_LABELS = { 1: 'Past 24 hours', 3: 'Past 3 days', 7: 'Past week', 30: 'Past 30 days' };
@@ -120,19 +139,37 @@ function getLogin() {
     });
     loginWin.loadURL('https://jobright.ai/');
 
-    // Detect a successful login by polling the session cookies while the window
-    // is open. Jobright is an SPA whose post-login navigation may be in-page or
-    // a full page load, so watching URL transitions is unreliable. Polling the
-    // actual session is robust regardless of how the redirect happens. Once a
-    // session exists we hide the window, surface the dashboard, and notify the
-    // renderer so its UI flips to the signed-in state.
+    // Detect a successful login WITHOUT false positives. jobright.ai sets cookies
+    // (including httpOnly ones) on the anonymous page before you sign in, so a
+    // plain "do auth cookies exist" check fires immediately and wrongly. Instead
+    // we snapshot the cookies that are present once the anonymous page has loaded
+    // and settled, then watch only for a NEW session cookie that appears after
+    // you actually authenticate. Pre-existing/anonymous cookies are baselined out.
     let _loginPoll = null;
+    let _baseline  = null;   // Set<string> of cookie names present before sign-in
     const stopLoginPoll = () => { if (_loginPoll) { clearInterval(_loginPoll); _loginPoll = null; } };
-    const startLoginPoll = () => {
+
+    const liveJobrightCookies = async () => {
+      try {
+        const cs = await session.defaultSession.cookies.get({ domain: 'jobright.ai' });
+        const now = Date.now() / 1000;
+        return cs.filter(c => !c.expirationDate || c.expirationDate > now);
+      } catch { return []; }
+    };
+
+    const startLoginPoll = async () => {
       stopLoginPoll();
+      // Baseline = cookies present right now (anonymous visit). Anything new that
+      // shows up later and looks like a session is treated as a successful login.
+      _baseline = new Set((await liveJobrightCookies()).map(c => c.name));
       _loginPoll = setInterval(async () => {
         if (!loginWin || loginWin.isDestroyed()) { stopLoginPoll(); return; }
-        if (await checkLoggedIn()) {
+        const cs = await liveJobrightCookies();
+        const newSession = cs.some(c =>
+          !_baseline.has(c.name) &&
+          !ANALYTICS_COOKIE_RE.test(c.name) &&
+          (c.httpOnly === true || AUTH_COOKIE_RE.test(c.name)));
+        if (newSession) {
           stopLoginPoll();
           if (loginWin && !loginWin.isDestroyed()) loginWin.hide();
           getDashboard().show();
@@ -140,7 +177,12 @@ function getLogin() {
         }
       }, 1500);
     };
-    loginWin.on('show', startLoginPoll);
+
+    // Take the baseline only after the anonymous page has loaded and its cookies
+    // have settled, so the initial anonymous cookies do not count as a new login.
+    loginWin.webContents.once('did-finish-load', () => {
+      setTimeout(() => { if (loginWin && !loginWin.isDestroyed()) startLoginPoll(); }, 3000);
+    });
     loginWin.on('hide', stopLoginPoll);
     loginWin.on('closed', () => { stopLoginPoll(); loginWin = null; });
   }
@@ -186,8 +228,11 @@ function refreshTrayMenu() {
 
 // ── Session / login check ─────────────────────────────────────────────────────
 
-// Cookie names that clearly indicate an authenticated session.
-const AUTH_COOKIE_RE = /token|session|auth|sid|jwt|login|credential|user|access|refresh/i;
+// jobright.ai stores its authenticated session in the httpOnly "SESSION_ID"
+// cookie, which is present ONLY after sign-in (verified by cookie inspection).
+// Match it precisely so analytics cookies such as ttcsid / _uetsid (which merely
+// contain "sid") are never mistaken for a logged-in session.
+const AUTH_COOKIE_RE = /^session[_-]?id$/i;
 // Known analytics/marketing cookies that are set even when signed out and must
 // NOT be treated as a session.
 const ANALYTICS_COOKIE_RE = /^(_ga|_gid|_gat|_gcl|_fbp|_fbc|_hj|ajs_|amplitude|mp_|_mkto|__stripe|_clck|_clsk|_uetsid|_uetvid|optimizely|hubspot|__hs|intercom)/i;
@@ -197,11 +242,11 @@ async function checkLoggedIn() {
   // Reliable across restarts (Electron stores cookies on disk in userData) and
   // avoids the SPA redirect problem that makes net.fetch unreliable.
   //
-  // We treat the user as signed in if there is a non-expired cookie that is
-  // either named like a session/auth token OR is httpOnly (real session cookies
-  // are almost always httpOnly), while explicitly ignoring known analytics
-  // cookies. This is permissive enough to avoid false negatives across cookie
-  // naming schemes, but still rejects a page that only set tracking cookies.
+  // We treat the user as signed in only if there is a non-expired cookie whose
+  // NAME looks like a session/auth token, ignoring known analytics cookies.
+  // We intentionally do NOT count "httpOnly" as a signal here: jobright.ai sets
+  // httpOnly cookies on the anonymous page before sign-in, so that would produce
+  // a false positive that hides the login window and the Sign In button.
   try {
     const cookies = await session.defaultSession.cookies.get({ domain: 'jobright.ai' });
     const now = Date.now() / 1000;
@@ -209,7 +254,7 @@ async function checkLoggedIn() {
       const live = !c.expirationDate || c.expirationDate > now;
       if (!live) return false;
       if (ANALYTICS_COOKIE_RE.test(c.name)) return false;
-      return c.httpOnly === true || AUTH_COOKIE_RE.test(c.name);
+      return AUTH_COOKIE_RE.test(c.name);
     });
   } catch {
     return false;
@@ -229,7 +274,7 @@ function broadcast(channel, payload) {
 // ── Pipeline ──────────────────────────────────────────────────────────────────
 
 async function runPipeline(options) {
-  const { daysAgo = 7 } = options || {};
+  const { daysAgo = 7, includeSeen = false } = options || {};
   const ts = timestamp();
 
   // Lazy requires - scrapers/eval are written later; prevents startup failure
@@ -309,10 +354,11 @@ async function runPipeline(options) {
   // ── Merge + dedup ──────────────────────────────────────────────────────────
   broadcast('scrape:progress', { step: 'merge', message: 'Merging results...', pct: 72 });
 
-  // Collect ATS URLs seen in ALL prior evaluated outputs so they are skipped
+  // Collect ATS URLs seen in ALL prior evaluated outputs so they are skipped.
+  // Skipped entirely when includeSeen is set, so a run shows its full set.
   const priorUrls = new Set();
   const evalDir = evaluatedDir();
-  if (fs.existsSync(evalDir)) {
+  if (!includeSeen && fs.existsSync(evalDir)) {
     for (const f of fs.readdirSync(evalDir).filter(n => n.endsWith('.json'))) {
       try {
         const prior = JSON.parse(fs.readFileSync(path.join(evalDir, f), 'utf8'));
@@ -396,13 +442,19 @@ async function triggerScrape(options) {
   getDashboard().show();
   try {
     const result = await runPipeline(options);
-    if (result && !scrapeAbort.signal.aborted) {
+    if (scrapeAbort && scrapeAbort.signal.aborted) {
+      // Cancelled: tell the UI so it can leave the progress view, rather than
+      // hanging on the last progress message.
+      broadcast('scrape:cancelled', {});
+    } else if (result) {
       broadcast('scrape:complete', result);
     }
   } catch (err) {
     // Not-signed-in is surfaced as a friendly prompt via 'auth:required', not a
     // hard scrape failure, so we suppress the generic error in that case.
-    if (err.message !== '__AUTH_REQUIRED__') {
+    if (scrapeAbort && scrapeAbort.signal.aborted) {
+      broadcast('scrape:cancelled', {});
+    } else if (err.message !== '__AUTH_REQUIRED__') {
       broadcast('scrape:error', { message: err.message });
     }
   } finally {
@@ -524,6 +576,17 @@ if (!app.requestSingleInstanceLock()) {
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  // Wipe disposable browser caches left over from the previous run so the
+  // userData directory stays small. We deliberately do NOT clear cookies or
+  // local/indexed storage, since those hold the Jobright session.
+  try {
+    await session.defaultSession.clearCache();
+    await session.defaultSession.clearCodeCaches?.({});
+    await session.defaultSession.clearStorageData({
+      storages: ['cachestorage', 'shadercache', 'serviceworkers'],
+    });
+  } catch { /* non-fatal */ }
+
   setupTray();
   registerIpc();
 

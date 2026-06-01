@@ -193,6 +193,7 @@
 <header>
   <h1>&#9881; Jobsift Config</h1>
   <span id="status">Loading&hellip;</span>
+  <button id="return-btn" onclick="returnHome()" style="background:var(--surface);color:var(--text);border:1px solid var(--border);padding:8px 18px;border-radius:6px;font-size:14px;cursor:pointer;margin-right:8px">&#8962; Return</button>
   <button id="save-btn" onclick="saveConfig()">Save</button>
 </header>
 
@@ -1418,6 +1419,11 @@ function saveConfig() {
   window.electronAPI.saveConfig(data)
     .then(() => { toast('Saved'); setStatus('Saved', 'ok'); })
     .catch(e  => { toast('Save failed: ' + e.message, true); setStatus('Error', 'err'); });
+}
+
+// Navigate this same window back to the dashboard landing page.
+function returnHome() {
+  window.location.href = '../dashboard/index.html';
 }
 
 

@@ -33,6 +33,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('scrape:error', handler);
     return () => ipcRenderer.removeListener('scrape:error', handler);
   },
+  onScrapeCancelled: (cb) => {
+    const handler = (_event, data) => cb(data);
+    ipcRenderer.on('scrape:cancelled', handler);
+    return () => ipcRenderer.removeListener('scrape:cancelled', handler);
+  },
 
   // ── Results ─────────────────────────────────────────────────────────────────
   getLatestResult: ()       => ipcRenderer.invoke('results:getLatest'),

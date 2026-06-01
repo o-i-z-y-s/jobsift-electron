@@ -301,10 +301,10 @@ async function ghSalaryFromDetail(slug, jobId, prefetched) {
 
 const PAY_HDR_RE = /\b(?:pay\s+and\s+benefits|compensation(?:\s+(?:&|and)\s+benefits)?|salary\s+range|pay\s+range|total\s+compensation)\b/i;
 
-async function htmlSalaryFallback(jobUrl) {
+async function htmlSalaryFallback(jobUrl, signal = null) {
   if (!jobUrl) return '';
   try {
-    const r = await fetchRetry(jobUrl, { redirect: 'follow' });
+    const r = await fetchRetry(jobUrl, { redirect: 'follow' }, 3, signal);
     if (r.status !== 200) return '';
     const text = stripHtml(await r.text());
     const hm = PAY_HDR_RE.exec(text);
@@ -339,6 +339,7 @@ async function scrapeGreenhouse(company, board, titleMatches, signal = null) {
   const matches = [];
 
   for (const job of jobs) {
+    if (signal?.aborted) break;
     const title = job.title || '';
     if (!titleMatches(title)) continue;
 
@@ -352,7 +353,7 @@ async function scrapeGreenhouse(company, board, titleMatches, signal = null) {
 
     if (needDetail) {
       try {
-        const dr = await fetchRetry(`${GH_API}/${board}/jobs/${job.id}`);
+        const dr = await fetchRetry(`${GH_API}/${board}/jobs/${job.id}`, {}, 3, signal);
         detailData = dr.status === 200 ? await dr.json() : {};
       } catch { detailData = {}; }
       if (!salary) salary = await ghSalaryFromDetail(board, job.id, detailData);
@@ -364,7 +365,7 @@ async function scrapeGreenhouse(company, board, titleMatches, signal = null) {
       if (better) finalLoc = better;
     }
 
-    if (!salary) salary = await htmlSalaryFallback(jobUrl);
+    if (!salary) salary = await htmlSalaryFallback(jobUrl, signal);
 
     const [resp_, req_, pref_] = splitDescription(contentText);
     const wt = normalizeWorkType(finalLoc);
@@ -529,7 +530,7 @@ async function scrapeAshby(company, slug, titleMatches, signal = null) {
         variables:     { organizationHostedJobsPageName: slug },
         query:         ASHBY_LIST_QUERY,
       }),
-    });
+    }, 3, signal);
     const gql = await r.json();
     const boardNode = gql?.data?.jobBoardWithTeams;
     if (boardNode) {
@@ -555,6 +556,7 @@ async function scrapeAshby(company, slug, titleMatches, signal = null) {
   const matches = [];
 
   for (const posting of postings) {
+    if (signal?.aborted) break;
     const title = posting.title || '';
     if (!titleMatches(title)) continue;
 
@@ -574,7 +576,7 @@ async function scrapeAshby(company, slug, titleMatches, signal = null) {
             variables:     { organizationHostedJobsPageName: slug, jobPostingId: jobId },
             query:         ASHBY_DETAIL_QUERY,
           }),
-        });
+        }, 3, signal);
         const dj = await dr.json();
         descText = stripHtml(dj?.data?.jobPosting?.descriptionHtml || '');
       } catch { /* ignore */ }
@@ -688,14 +690,15 @@ function parseWdHtml(htmlText) {
   return {};
 }
 
-async function fetchWdDescription(baseUrl, tenant, site, jobId, extPath) {
+async function fetchWdDescription(baseUrl, tenant, site, jobId, extPath, signal = null) {
   const detailUrl = `${baseUrl}/wday/cxs/${tenant}/${site}/jobs/${jobId}`;
   for (const [method, extra] of [
     ['GET',  {}],
     ['POST', { headers: { 'Content-Type': 'application/json' }, body: '{}' }],
   ]) {
+    if (signal?.aborted) return {};
     try {
-      const r = await fetchRetry(detailUrl, { method, ...extra });
+      const r = await fetchRetry(detailUrl, { method, ...extra }, 3, signal);
       if (r.status === 200) {
         const parsed = parseWdApi(await r.json());
         if (parsed.desc || parsed.req) {
@@ -707,7 +710,7 @@ async function fetchWdDescription(baseUrl, tenant, site, jobId, extPath) {
   }
   const pageUrl = `${baseUrl}/en-US/${site}${extPath}`;
   try {
-    const r = await fetchRetry(pageUrl);
+    const r = await fetchRetry(pageUrl, {}, 3, signal);
     if (r.status === 200) {
       const parsed = parseWdHtml(await r.text());
       if (Object.keys(parsed).length) return parsed;
@@ -766,6 +769,7 @@ async function scrapeWorkday(company, baseUrl, tenant, site, searchTerms, titleM
   const results = [];
 
   for (const job of unique) {
+    if (signal?.aborted) break;
     const title = job.title || '';
     if (!titleMatches(title)) continue;
 
@@ -778,7 +782,7 @@ async function scrapeWorkday(company, baseUrl, tenant, site, searchTerms, titleM
 
     let detail = {};
     if (jobId && extPath) {
-      detail = await fetchWdDescription(baseUrl, tenant, site, jobId, extPath);
+      detail = await fetchWdDescription(baseUrl, tenant, site, jobId, extPath, signal);
       await sleep(400);
     }
 
@@ -899,7 +903,7 @@ async function run({ cfg, signal, onProgress }) {
     if (signal?.aborted) break;
     const results = await scrapeGreenhouse(company, board, titleMatches, signal);
     allFound.push(...results);
-    tick(`GH: ${company}`);
+    tick(`Greenhouse · ${company}: +${results.length} (${allFound.length} ATS roles so far)`);
     await sleep(500);
   }
 
@@ -909,7 +913,7 @@ async function run({ cfg, signal, onProgress }) {
     if (signal?.aborted) break;
     const results = await scrapeLever(company, slug, titleMatches, signal);
     allFound.push(...results);
-    tick(`LV: ${company}`);
+    tick(`Lever · ${company}: +${results.length} (${allFound.length} ATS roles so far)`);
     await sleep(500);
   }
 
@@ -919,7 +923,7 @@ async function run({ cfg, signal, onProgress }) {
     if (signal?.aborted) break;
     const results = await scrapeAshby(company, slug, titleMatches, signal);
     allFound.push(...results);
-    tick(`AS: ${company}`);
+    tick(`Ashby · ${company}: +${results.length} (${allFound.length} ATS roles so far)`);
     await sleep(500);
   }
 
@@ -951,7 +955,7 @@ async function run({ cfg, signal, onProgress }) {
       company, info.base_url, info.tenant, info.site, WD_TERMS, titleMatches, signal,
     );
     allFound.push(...results);
-    tick(`WD: ${company}`);
+    tick(`Workday · ${company}: +${results.length} (${allFound.length} ATS roles so far)`);
     await sleep(1000);
   }
 

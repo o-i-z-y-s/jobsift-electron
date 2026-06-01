@@ -663,7 +663,7 @@
 <div id="dropzone">
   <h1>Jobsift</h1>
   <!-- progress panel (shown during a scrape) -->
-  <div id="progress-panel" style="display:none;width:100%;max-width:520px;margin:0 auto 24px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px 24px">
+  <div id="progress-panel" style="display:none;width:100%;max-width:620px;margin:0 auto 24px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px 24px">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
       <span id="progress-msg" style="font-size:14px;font-weight:600">Starting...</span>
       <span id="progress-pct" style="font-size:13px;color:var(--muted)">0%</span>
@@ -671,22 +671,30 @@
     <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden">
       <div id="progress-bar" style="height:100%;background:var(--accent);width:0%;transition:width .3s"></div>
     </div>
-    <button onclick="window.electronAPI.cancelScrape()" style="margin-top:14px;background:none;border:1px solid var(--border);color:var(--muted);padding:6px 16px;border-radius:5px;font-size:12px;cursor:pointer">Cancel</button>
+    <!-- live activity feed so the run is not a black box -->
+    <div id="progress-log" style="margin-top:14px;height:200px;overflow-y:scroll;text-align:left;font-size:12px;line-height:1.6;color:var(--muted);font-family:ui-monospace,Menlo,Consolas,monospace;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px"></div>
+    <button id="cancel-btn" onclick="cancelScrape()" style="margin-top:14px;background:none;border:1px solid var(--border);color:var(--muted);padding:6px 16px;border-radius:5px;font-size:12px;cursor:pointer">Cancel</button>
   </div>
   <!-- empty state (no results yet) -->
   <div id="empty-state" style="text-align:center;color:var(--muted);padding:40px 0">
     <div style="font-size:48px;margin-bottom:16px">&#128269;</div>
     <p style="font-size:15px;margin-bottom:8px" id="empty-heading">No results yet.</p>
     <p style="font-size:13px" id="empty-subtext">Sign in to Jobright, then run a search.</p>
-    <div style="display:flex;gap:12px;justify-content:center;align-items:center;margin-top:18px;flex-wrap:wrap">
-      <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)">Period
-        <select class="run-period" onchange="setRunPeriod(this.value)" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:8px 10px;border-radius:6px;font-size:13px;cursor:pointer">
-          <option value="1">Past 24 hours</option>
-          <option value="3">Past 3 days</option>
-          <option value="7" selected>Past week</option>
-          <option value="30">Past month</option>
-        </select>
-      </label>
+    <div id="auth-status" style="margin:14px auto 0;display:inline-block;font-size:13px;font-weight:600;color:var(--muted);border:1px solid var(--border);border-radius:999px;padding:5px 14px">Checking Jobright session…</div>
+    <div style="display:flex;gap:12px;justify-content:center;align-items:flex-start;margin-top:18px;flex-wrap:wrap">
+      <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-start">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)">Period
+          <select class="run-period" onchange="setRunPeriod(this.value)" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:8px 10px;border-radius:6px;font-size:13px;cursor:pointer">
+            <option value="1">Past 24 hours</option>
+            <option value="3">Past 3 days</option>
+            <option value="7" selected>Past week</option>
+            <option value="30">Past month</option>
+          </select>
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);cursor:pointer" title="Show roles even if they appeared in previous runs (skips cross-run de-duplication)">
+          <input type="checkbox" class="include-seen" onchange="setIncludeSeen(this.checked)"> Include previously seen
+        </label>
+      </div>
       <button onclick="runNow()" style="background:var(--accent);color:#fff;border:none;padding:9px 22px;border-radius:6px;font-size:14px;cursor:pointer;font-weight:600">&#9654; Run Now</button>
       <button id="signin-btn" onclick="window.electronAPI?.openLoginWindow()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:9px 22px;border-radius:6px;font-size:14px;cursor:pointer">Sign In to Jobright</button>
       <button onclick="openConfig()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:9px 22px;border-radius:6px;font-size:14px;cursor:pointer">&#9881; Configuration</button>
@@ -705,15 +713,19 @@
       <div class="meta" id="header-meta"></div>
     </div>
     <div style="display:flex;gap:8px;align-items:center">
+      <span id="auth-status-header" style="font-size:12px;font-weight:600;color:var(--muted);margin-right:4px"></span>
       <select class="run-period" onchange="setRunPeriod(this.value)" title="Scan period" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:7px 10px;border-radius:6px;font-size:13px;cursor:pointer">
         <option value="1">Past 24 hours</option>
         <option value="3">Past 3 days</option>
         <option value="7" selected>Past week</option>
         <option value="30">Past month</option>
       </select>
+      <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer" title="Show roles even if they appeared in previous runs (skips cross-run de-duplication)">
+        <input type="checkbox" class="include-seen" onchange="setIncludeSeen(this.checked)"> Incl. seen
+      </label>
       <button onclick="runNow()" style="background:var(--accent);color:#fff;border:none;padding:7px 18px;border-radius:6px;font-size:13px;cursor:pointer;font-weight:600">&#9654; Run Now</button>
       <button class="reload-btn" onclick="openConfig()">&#9881; Configuration</button>
-      <button class="reload-btn" onclick="resetToDropzone()">&#8617; Load different run</button>
+      <button class="reload-btn" onclick="resetToDropzone()">&#8962; Return to Home</button>
     </div>
   </header>
 
@@ -856,11 +868,32 @@ const rejState = { tab: 'pm', sortCol: 'category', sortDir: 'asc', tier: 'tier1'
 const fileInput  = document.getElementById('file-input');
 const errorMsg   = document.getElementById('error-msg');
 
+// Reflect Jobright auth state in both status badges and the Sign In button.
+function updateAuthBadge(loggedIn) {
+  const text  = loggedIn ? '✓ Jobright session authenticated' : '⚠ Not signed in to Jobright';
+  const color = loggedIn ? '#4caf7d' : 'var(--muted)';
+  const home = document.getElementById('auth-status');
+  if (home) {
+    home.textContent = text;
+    home.style.color = color;
+    home.style.borderColor = loggedIn ? '#4caf7d' : 'var(--border)';
+  }
+  const hdr = document.getElementById('auth-status-header');
+  if (hdr) { hdr.textContent = text; hdr.style.color = color; }
+  const btn = document.getElementById('signin-btn');
+  if (btn) btn.style.display = loggedIn ? 'none' : '';
+}
+
+// Re-check the session and refresh the badge.
+function refreshAuthBadge() {
+  if (!window.electronAPI?.isLoggedIn) return;
+  window.electronAPI.isLoggedIn().then(updateAuthBadge).catch(() => {});
+}
+
 function setSignedIn() {
   document.getElementById('empty-heading').textContent = 'Ready to run.';
   document.getElementById('empty-subtext').textContent = 'Click Run Now to start a search.';
-  const btn = document.getElementById('signin-btn');
-  if (btn) btn.style.display = 'none';
+  updateAuthBadge(true);
   // Clear any stale "not signed in" prompt now that the session is valid.
   if (errorMsg) errorMsg.style.display = 'none';
 }
@@ -874,8 +907,7 @@ function showAuthNeeded() {
   document.getElementById('empty-state').style.display   = 'block';
   document.getElementById('empty-heading').textContent   = 'Sign in to Jobright to continue';
   document.getElementById('empty-subtext').textContent   = 'A sign-in window has opened. After you sign in, press Run Now.';
-  const btn = document.getElementById('signin-btn');
-  if (btn) btn.style.display = '';
+  updateAuthBadge(false);
   if (errorMsg) errorMsg.style.display = 'none';
 }
 
@@ -883,13 +915,13 @@ function showAuthNeeded() {
 if (window.electronAPI) {
   // Check auth state immediately so the empty state reflects the persisted session.
   window.electronAPI.isLoggedIn().then(loggedIn => {
+    updateAuthBadge(loggedIn);
     if (loggedIn) setSignedIn();
   }).catch(() => {});
 
-  window.electronAPI.getLatestResult().then(data => {
-    if (data) render(data);
-    // else empty-state is already visible
-  }).catch(() => {});
+  // Stay on the home/landing screen at launch instead of auto-loading the last
+  // run. The user can open a previous run via "Load Past Result", and a fresh
+  // run renders automatically on completion.
 
   // Restore the persisted scan period into the selectors.
   window.electronAPI.getRunPeriod?.().then(days => {
@@ -907,10 +939,30 @@ if (window.electronAPI) {
     document.getElementById('progress-msg').textContent   = message;
     document.getElementById('progress-pct').textContent   = Math.round(pct) + '%';
     document.getElementById('progress-bar').style.width   = Math.round(pct) + '%';
+    // First step of a run (auth check): clear any stale feed and reset Cancel,
+    // so tray-initiated runs also start fresh.
+    if (step === 'auth') {
+      const log = document.getElementById('progress-log');
+      if (log) log.innerHTML = '';
+      const btn = document.getElementById('cancel-btn');
+      if (btn) { btn.textContent = 'Cancel'; btn.disabled = false; btn.style.opacity = '1'; }
+      if (errorMsg) errorMsg.style.display = 'none';
+    }
+    appendProgressLog(message);
   });
 
   const _cleanupComplete = window.electronAPI.onScrapeComplete(({ outputPath, counts }) => {
     document.getElementById('progress-panel').style.display = 'none';
+    // A run that reviewed nothing (everything was a duplicate of prior runs, or
+    // nothing matched) should explain itself instead of showing a blank board.
+    if (counts && (counts.accepted | 0) === 0 && (counts.rejected | 0) === 0) {
+      resetToDropzone();
+      document.getElementById('empty-heading').textContent = 'No new listings to review';
+      document.getElementById('empty-subtext').textContent =
+        'Everything found was already seen in a previous run (deduplicated), or nothing matched. ' +
+        'Check the activity feed counts, try a longer period, or open a previous run with Load Past Result.';
+      return;
+    }
     window.electronAPI.getLatestResult().then(data => { if (data) render(data); });
   });
 
@@ -918,6 +970,13 @@ if (window.electronAPI) {
     document.getElementById('progress-panel').style.display = 'none';
     document.getElementById('empty-state').style.display    = 'block';
     showError('Scrape failed: ' + message);
+  });
+
+  const _cleanupCancelled = window.electronAPI.onScrapeCancelled?.(() => {
+    // Leave the progress view instead of hanging on the last message.
+    resetToDropzone();
+    document.getElementById('empty-heading').textContent = 'Run cancelled';
+    document.getElementById('empty-subtext').textContent = 'The scan was stopped. Press Run Now to start again.';
   });
 
   const _cleanupLogin = window.electronAPI.onLoginComplete(() => setSignedIn());
@@ -928,6 +987,7 @@ if (window.electronAPI) {
     _cleanupProgress?.();
     _cleanupComplete?.();
     _cleanupError?.();
+    _cleanupCancelled?.();
     _cleanupLogin?.();
     _cleanupAuthReq?.();
   });
@@ -956,13 +1016,59 @@ function setRunPeriod(v, persist = true) {
 }
 
 function openConfig() {
-  if (!window.electronAPI) { showError('Electron API not available.'); return; }
-  window.electronAPI.openConfigWindow();
+  // Navigate this same window to the Configuration page (no second window).
+  window.location.href = '../config/index.html';
+}
+
+// When checked, the run skips cross-run de-duplication and shows its full set.
+let _includeSeen = false;
+function setIncludeSeen(v) {
+  _includeSeen = !!v;
+  document.querySelectorAll('.include-seen').forEach(c => { c.checked = _includeSeen; });
+}
+
+// Append a line to the live activity feed, skipping consecutive duplicates and
+// keeping the list to a sane length.
+function appendProgressLog(message) {
+  const log = document.getElementById('progress-log');
+  if (!log || !message) return;
+  const last = log.lastChild;
+  // Collapse repetitive "n/total" progress: if the new line has the same text
+  // before the ratio as the previous line, update that line in place instead of
+  // printing a new one for every page.
+  const RATIO = /^(.*?)(\d+)\s*\/\s*(\d+)\s*$/;
+  const m = message.match(RATIO);
+  if (m && last) {
+    const lm = (last.textContent || '').match(RATIO);
+    if (lm && lm[1] === m[1]) { last.textContent = message; log.scrollTop = log.scrollHeight; return; }
+  }
+  if (last && last.textContent === message) return;  // skip consecutive duplicates
+  const line = document.createElement('div');
+  line.textContent = message;
+  log.appendChild(line);
+  while (log.childElementCount > 100) log.removeChild(log.firstChild);
+  log.scrollTop = log.scrollHeight;
+}
+
+// Cancel wrapper: signal the main process and reflect "stopping" in the UI so the
+// user knows the request was received (cancellation finishes the current item).
+function cancelScrape() {
+  if (!window.electronAPI) return;
+  window.electronAPI.cancelScrape();
+  const btn = document.getElementById('cancel-btn');
+  if (btn) { btn.textContent = 'Cancelling…'; btn.disabled = true; btn.style.opacity = '0.6'; }
+  appendProgressLog('Cancelling… finishing the current request.');
 }
 
 function runNow() {
   if (!window.electronAPI) { showError('Electron API not available.'); return; }
-  window.electronAPI.startScrape({ daysAgo: _runPeriod });
+  // Clear any stale message (e.g. "No past results found.") and reset the feed.
+  if (errorMsg) errorMsg.style.display = 'none';
+  const log = document.getElementById('progress-log');
+  if (log) log.innerHTML = '';
+  const btn = document.getElementById('cancel-btn');
+  if (btn) { btn.textContent = 'Cancel'; btn.disabled = false; btn.style.opacity = '1'; }
+  window.electronAPI.startScrape({ daysAgo: _runPeriod, includeSeen: _includeSeen });
 }
 
 async function loadPastResult() {
@@ -1031,6 +1137,12 @@ function showError(msg) {
 function resetToDropzone() {
   document.getElementById('dashboard').style.display = 'none';
   document.getElementById('dropzone').style.display  = 'flex';
+  // A prior scrape hides the empty-state and shows the progress panel; restore
+  // them so the landing controls (Run Now, Sign In, Configuration, etc.) reappear
+  // instead of leaving a blank page with only the title.
+  document.getElementById('progress-panel').style.display = 'none';
+  document.getElementById('empty-state').style.display    = 'block';
+  refreshAuthBadge();
   fileInput.value = '';
   errorMsg.style.display = 'none';
   // Reset rejected panel state
@@ -1149,6 +1261,12 @@ function render(data) {
   });
 
   applyTrackFilter();
+
+  // If nothing was accepted but roles were reviewed and rejected, auto-expand the
+  // rejected panel so the run is not a blank-looking screen.
+  if ((accData.roles || []).length === 0 && allRejRoles.length > 0 && !rejOpen) {
+    toggleRejPanel();
+  }
 
   document.getElementById('dropzone').style.display  = 'none';
   document.getElementById('dashboard').style.display = 'block';
@@ -1409,11 +1527,15 @@ function handleRejTab(tab) {
 }
 
 function getFilteredRejRoles() {
+  // Use the same track checkboxes as the accepted side (built with data-track),
+  // not non-existent "filt-XXX" element ids. If none are checked, show all tracks.
   const activeTracks = new Set(
-    ['REM','IRL','ADD'].filter(t => document.getElementById('filt-' + t)?.checked)
+    [...document.querySelectorAll('#track-filter-group input[type=checkbox]')]
+      .filter(cb => cb.checked).map(cb => cb.dataset.track)
   );
+  const noTrackFilter = activeTracks.size === 0;
   let roles = allRejRoles.filter(r =>
-    activeTracks.has(r.track) &&
+    (noTrackFilter || activeTracks.has(r.track)) &&
     (sourceTab === 'ats' ? isAtsRole(r) : !isAtsRole(r))
   );
   if (rejState.tier !== 'all') {

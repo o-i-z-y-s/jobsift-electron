@@ -174,7 +174,7 @@ async function sortTopMatched(win) {
  */
 async function collectListingUrls(win, minPct, seen, cardExcludeRe, scrollPauseMs, signal) {
   const results = [];
-  let lowRun = 0;
+  let stall = 0;  // consecutive scroll passes that loaded no new cards (end guard)
 
   while (true) {
     if (signal?.aborted) break;
@@ -195,21 +195,17 @@ async function collectListingUrls(win, minPct, seen, cardExcludeRe, scrollPauseM
       })()
     `);
 
-    let newThisPass = 0;
+    let newSeenThisPass = 0;  // any newly seen card this pass (incl. below threshold)
     for (const card of cards) {
       const { jid, pct, text } = card;
       if (seen.has(jid)) continue;
       seen.add(jid);
+      newSeenThisPass++;
 
-      if (pct !== null && pct < minPct) {
-        lowRun++;
-        if (lowRun >= 3) {
-          console.log(`    Match% hit ${pct}% - stopping collection`);
-          return results;
-        }
-        continue;
-      }
-      if (pct !== null) lowRun = 0;
+      // Skip listings below the configured match threshold, but keep scanning.
+      // We do NOT stop early: every listing at or above min_match_pct in the
+      // selected window is collected (filtering happens later in eval).
+      if (pct !== null && pct < minPct) continue;
 
       if (cardExcludeRe && cardExcludeRe.test(text)) continue;
 
@@ -219,7 +215,6 @@ async function collectListingUrls(win, minPct, seen, cardExcludeRe, scrollPauseM
         match_pct: pct,
         card_text: text,
       });
-      newThisPass++;
     }
 
     // Scroll the job list container (mirrors the Python scroll logic)
@@ -257,8 +252,12 @@ async function collectListingUrls(win, minPct, seen, cardExcludeRe, scrollPauseM
       })()
     `);
 
-    if (newH === prevH && newThisPass === 0) {
-      console.log(`    End of results - ${results.length} listings collected`);
+    // End of results: stop when the list no longer grows and nothing new loaded,
+    // or after several consecutive passes that loaded no new cards (guards against
+    // a container height that keeps jittering at the end of a long list).
+    stall = newSeenThisPass === 0 ? stall + 1 : 0;
+    if ((newH === prevH && newSeenThisPass === 0) || stall >= 4) {
+      console.log(`    End of results - ${results.length} listings collected (>= ${minPct}% match)`);
       return results;
     }
   }
@@ -435,6 +434,7 @@ async function fetchDetailsPool(listings, nWorkers, signal, onTick) {
 async function runSearch(searchCfg, minPct, scrollPauseMs, nWorkers, cardExcludeRe, seen, signal, onProgress) {
   console.log(`\n  ${'='.repeat(56)}`);
   console.log(`  Pass: ${searchCfg.label}`);
+  console.log(`  URL:  ${searchCfg.url}`);
   console.log(`  ${'='.repeat(56)}`);
 
   const win = makeHiddenWindow();
@@ -492,7 +492,7 @@ async function run({ cfg, daysAgo = 7, signal, onProgress }) {
   const cardExcludeRe = buildCardExcludeRe(cfg.title_filters?.card_exclude || []);
 
   const searches = buildSearches(cfg, daysAgo);
-  console.log(`\nJobright Scraper — ${searches.length} pass(es): ${searches.map(s => s.id).join(', ')}`);
+  console.log(`\nJobright Scraper - ${searches.length} pass(es): ${searches.map(s => s.id).join(', ')}`);
 
   const seen = new Set();
   const allResults = [];
