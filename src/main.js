@@ -8,7 +8,7 @@
 
 const {
   app, BrowserWindow, Tray, Menu, nativeImage,
-  ipcMain, net, session, Notification,
+  ipcMain, net, session, Notification, shell,
 } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
@@ -105,6 +105,16 @@ function makeWin(opts = {}) {
       e.preventDefault();
       win.hide();
     }
+  });
+  // Open external links (Apply buttons, any http/https link) in the user's
+  // default browser rather than inside the app. Internal file:// navigation
+  // (dashboard <-> config) is left alone.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  win.webContents.on('will-navigate', (e, url) => {
+    if (/^https?:\/\//i.test(url)) { e.preventDefault(); shell.openExternal(url); }
   });
   return win;
 }

@@ -1,19 +1,83 @@
 name: Release
 
-# Build and publish installers when a version tag (e.g. v0.1.0) is pushed.
-# electron-builder uploads the artifacts to a GitHub Release using the publish
-# block in electron-builder.yml (owner/repo) and the GITHUB_TOKEN below.
+# Two ways to cut a release:
+#  1. Manual (recommended): Actions tab -> Release -> "Run workflow", pick a
+#     version bump (none / patch / minor / major). This bumps package.json,
+#     commits + tags, then builds and publishes the installers. No local git.
+#  2. Push a v* tag yourself (e.g. from GitHub Desktop): builds + publishes that tag.
+#
+# In both cases electron-builder uploads the Windows + macOS installers to a
+# draft GitHub Release (per the publish block in electron-builder.yml); you then
+# click "Publish release".
 on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump before release"
+        type: choice
+        default: none
+        options: [none, patch, minor, major]
   push:
     tags:
       - "v*"
 
-# Needed so electron-builder can create/update the GitHub Release.
 permissions:
-  contents: write
+  contents: write   # needed to push the version commit/tag and create the Release
 
 jobs:
+  # Resolves which git ref to build. On manual dispatch it optionally bumps the
+  # version and pushes the new commit + tag; on a tag push it just passes the tag.
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.ref.outputs.ref }}
+    steps:
+      # SECURITY: actions pinned to full commit SHAs (version in trailing comment).
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+
+      - name: Configure git
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump version and tag
+        if: github.event_name == 'workflow_dispatch' && inputs.bump != 'none'
+        run: |
+          npm version ${{ inputs.bump }} -m "Release v%s"
+          git push origin HEAD:main --follow-tags
+
+      - name: Tag current version (no bump)
+        if: github.event_name == 'workflow_dispatch' && inputs.bump == 'none'
+        run: |
+          V="v$(node -p "require('./package.json').version")"
+          if git rev-parse "$V" >/dev/null 2>&1; then
+            echo "Tag $V already exists; building it."
+          else
+            git tag "$V"
+            git push origin "$V"
+          fi
+
+      - name: Resolve build ref
+        id: ref
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "ref=v$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -23,13 +87,11 @@ jobs:
           - os: macos-latest
             target: mac
     runs-on: ${{ matrix.os }}
-
     steps:
-      # SECURITY: third-party actions are pinned to full commit SHAs (the version
-      # in the trailing comment is for humans). To bump, look up the new release's
-      # commit SHA and update both the SHA and the comment together.
-      - name: Checkout
+      - name: Checkout the release ref
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
 
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
