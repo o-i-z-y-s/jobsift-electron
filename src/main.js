@@ -72,6 +72,56 @@ function timestamp() {
 
 const SCAN_LABELS = { 1: 'Past 24 hours', 3: 'Past 3 days', 7: 'Past week', 30: 'Past 30 days' };
 
+// ── Requisition-id dedup (all platforms, both sources) ────────────────────────
+// The same job is often listed many times (e.g. once per authorized state) with
+// distinct jids and apply URLs but one underlying requisition. atsUrlKey turns a
+// supported ATS apply URL into a canonical "platform:id" key. Because Jobright's
+// "Original Job Post" link and the direct ATS fetch point at the SAME posting,
+// both yield the same key, so duplicates collapse across both sources and across
+// Greenhouse, Lever, Ashby, and Workday.
+function atsUrlKey(url) {
+  if (!url) return '';
+  let u;
+  try { u = new URL(url); } catch { return ''; }
+  const host = u.host.toLowerCase();
+  const path = u.pathname || '';
+  const UUID = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+  let m;
+  if (host.includes('greenhouse.io')) {            // boards.greenhouse.io/{board}/jobs/{numericId}
+    m = path.match(/\/jobs\/(\d+)/);
+    if (m) return `gh:${m[1]}`;
+  }
+  if (host.includes('lever.co')) {                 // jobs.lever.co/{slug}/{uuid}
+    m = path.match(UUID);
+    if (m) return `lv:${m[1].toLowerCase()}`;
+  }
+  if (host.includes('ashbyhq.com')) {              // jobs.ashbyhq.com/{slug}/{uuid}
+    m = path.match(UUID);
+    if (m) return `as:${m[1].toLowerCase()}`;
+  }
+  if (host.includes('myworkdayjobs.com')) {        // .../...{title}_{reqId}  (one per state)
+    m = path.match(/_([A-Za-z]{1,5}-?\d{4,})(?:[-_]\d{1,3})?$/)
+     || path.match(/([A-Za-z]{1,5}-?\d{4,})(?:[-_]\d{1,3})?(?:[/?#]|$)/);
+    if (m) return `wd:${host}:${m[1].toUpperCase()}`;
+  }
+  // Career-network sites (e.g. "{company}.jobs") that list the same role once per
+  // location as /{location}/{title-slug}/{32-hex-id}/job/. The location and hex id
+  // differ per posting, so key on host + the stable title slug.
+  m = path.match(/\/([^/]+)\/[0-9a-f]{32}\/job\/?$/i);
+  if (m) return `slug:${host}:${m[1].toLowerCase()}`;
+  return '';
+}
+
+function reqKeyOf(role) {
+  const k = atsUrlKey(role.ats_url || role.apply_url || '');
+  if (k) return k;
+  // Fallback: a labeled "Reqid:" in the role text (company-scoped).
+  const text = `${role.body_text || ''} ${role.card_text || ''} ${role.required_quals || ''}`;
+  const tm = text.match(/\bReq(?:uisition)?\s*(?:id|#|no\.?)?\s*[:#]\s*([A-Za-z]{1,6}-?\d{3,})/i);
+  if (tm) return `txt:${(role.company || '').toLowerCase()}|${tm[1].toUpperCase()}`;
+  return '';
+}
+
 // ── App state ─────────────────────────────────────────────────────────────────
 
 let tray         = null;
@@ -422,6 +472,7 @@ async function runPipeline(options) {
   // Collect ATS URLs seen in ALL prior evaluated outputs so they are skipped.
   // Skipped entirely when includeSeen is set, so a run shows its full set.
   const priorUrls = new Set();
+  const priorReq  = new Set();
   const evalDir = evaluatedDir();
   if (!includeSeen && fs.existsSync(evalDir)) {
     for (const f of fs.readdirSync(evalDir).filter(n => n.endsWith('.json'))) {
@@ -431,6 +482,8 @@ async function runPipeline(options) {
           for (const role of (prior[section]?.roles || [])) {
             const u = (role.apply_url || role.ats_url || '').toLowerCase().replace(/\/$/, '');
             if (u) priorUrls.add(u);
+            const rk = reqKeyOf(role);
+            if (rk) priorReq.add(rk);
           }
         }
       } catch { /* skip malformed files */ }
@@ -439,13 +492,19 @@ async function runPipeline(options) {
 
   const seenJids = new Set();
   const seenUrls = new Set();
+  const seenReq  = new Set();
   const merged   = [];
 
   for (const r of [...jobrightRaw, ...atsRaw]) {
     if (seenJids.has(r.jid)) continue;
     seenJids.add(r.jid);
+    // Same requisition listed across states (same Reqid, different jid/URL)
+    // collapses here.
+    const rk = reqKeyOf(r);
+    if (rk && (seenReq.has(rk) || priorReq.has(rk))) continue;
     const uk = (r.ats_url || '').toLowerCase().replace(/\/$/, '');
     if (uk && (seenUrls.has(uk) || priorUrls.has(uk))) continue;
+    if (rk) seenReq.add(rk);
     if (uk) seenUrls.add(uk);
     merged.push(r);
   }
@@ -590,6 +649,18 @@ function registerIpc() {
       throw new Error('Access denied: path outside results directory');
     }
     return JSON.parse(fs.readFileSync(resolved, 'utf8'));
+  });
+
+  ipcMain.handle('results:delete', (_e, fpath) => {
+    // Same path-safety check as load: only files inside the results directory,
+    // and only .json scrape outputs, may be deleted.
+    const resolved = path.resolve(fpath);
+    const evalRoot = path.resolve(evaluatedDir());
+    if (!resolved.startsWith(evalRoot + path.sep) || !resolved.toLowerCase().endsWith('.json')) {
+      throw new Error('Access denied: path outside results directory');
+    }
+    fs.unlinkSync(resolved);
+    return true;
   });
 
   // Auth

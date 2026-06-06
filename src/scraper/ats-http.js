@@ -641,6 +641,21 @@ function wdJobId(extPath) {
   return (extPath || '').replace(/\/$/, '').split('/').pop() || '';
 }
 
+// Extract a Workday requisition id (the stable "Reqid" / job ID). Workday lists
+// the same requisition once per authorized location with different externalPaths,
+// so we dedup on this rather than the path. The req id is usually in bulletFields;
+// fall back to a req-like token at the tail of the externalPath.
+function wdReqId(job) {
+  const fields = Array.isArray(job && job.bulletFields) ? job.bulletFields : [];
+  for (const f of fields) {
+    const m = String(f).match(/\b[A-Za-z]{0,5}-?\d{4,}\b/);
+    if (m) return m[0].toUpperCase();
+  }
+  const tail = ((job && job.externalPath) || '').split('/').pop() || '';
+  const m2 = tail.match(/([A-Za-z]{0,5}-?\d{4,})(?:[-_]\d{1,3})?$/);
+  return m2 ? m2[1].toUpperCase() : null;
+}
+
 function probe(data, pathArr, field) {
   let node = data;
   for (const key of pathArr) {
@@ -757,11 +772,13 @@ async function scrapeWorkday(company, baseUrl, tenant, site, searchTerms, titleM
     }
   }
 
-  // Dedup within this company
+  // Dedup within this company. Prefer the requisition id (so the same job listed
+  // across many authorized states collapses to one); fall back to the path.
   const seenPaths = new Set();
   const unique = [];
   for (const j of allJobs) {
-    const key = j.externalPath || j.title || '';
+    const reqid = wdReqId(j);
+    const key = reqid ? `req:${reqid}` : (j.externalPath || j.title || '');
     if (!seenPaths.has(key)) { seenPaths.add(key); unique.push(j); }
   }
 
@@ -795,10 +812,14 @@ async function scrapeWorkday(company, baseUrl, tenant, site, searchTerms, titleM
     const [resp_, req_, pref_] = splitDescription(fullText);
     const salary = extractSalary(fullText);
 
-    // Fallback jid uses hash of title+location when no jobId
-    const jid = jobId
-      ? `ats_wd_${tenant}_${jobId}`
-      : `ats_wd_${tenant}_${Math.abs(hashCode(title + locName))}`;
+    // Prefer the requisition id so the same job dedups across runs too; then the
+    // posting id; then a title+location hash as a last resort.
+    const reqid = wdReqId(job);
+    const jid = reqid
+      ? `ats_wd_${tenant}_${reqid}`
+      : jobId
+        ? `ats_wd_${tenant}_${jobId}`
+        : `ats_wd_${tenant}_${Math.abs(hashCode(title + locName))}`;
 
     results.push({
       jid,

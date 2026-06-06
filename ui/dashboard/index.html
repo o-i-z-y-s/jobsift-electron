@@ -1142,7 +1142,10 @@ function openResultPicker(paths) {
            + '<div style="display:flex;flex-direction:column;gap:6px">';
   paths.forEach((p, i) => {
     const label = _prettyRunLabel(p) + (i === 0 ? '  (latest)' : '');
-    html += `<button class="picker-row" data-idx="${i}" style="text-align:left;background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:9px 12px;border-radius:6px;font-size:13px;cursor:pointer">${label}</button>`;
+    html += `<div style="display:flex;gap:6px;align-items:stretch">
+      <button class="picker-row" data-idx="${i}" style="flex:1;text-align:left;background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:9px 12px;border-radius:6px;font-size:13px;cursor:pointer">${label}</button>
+      <button class="picker-del" data-idx="${i}" title="Delete this run" aria-label="Delete this run" style="background:var(--surface2);color:var(--muted);border:1px solid var(--border);padding:0 12px;border-radius:6px;font-size:14px;cursor:pointer">&#128465;</button>
+    </div>`;
   });
   html += '</div>';
   panel.innerHTML = html;
@@ -1159,6 +1162,25 @@ function openResultPicker(paths) {
         closeResultPicker();
         render(data);
       } catch (err) { showError('Failed to load: ' + err.message); }
+    });
+  });
+
+  panel.querySelectorAll('.picker-del').forEach(btn => {
+    btn.addEventListener('mouseenter', () => { btn.style.borderColor = '#ff5e5e'; btn.style.color = '#ff5e5e'; });
+    btn.addEventListener('mouseleave', () => { btn.style.borderColor = 'var(--border)'; btn.style.color = 'var(--muted)'; });
+    btn.addEventListener('click', async () => {
+      const p = paths[parseInt(btn.getAttribute('data-idx'), 10)];
+      if (!confirm(`Delete this run?\n\n${_prettyRunLabel(p)}\n\nThis permanently removes the saved result file.`)) return;
+      try {
+        await window.electronAPI.deleteResult(p);
+        const remaining = await window.electronAPI.listResults();
+        if (remaining.length) {
+          openResultPicker(remaining);   // re-render with the row gone
+        } else {
+          closeResultPicker();
+          showError('No past results remaining.');
+        }
+      } catch (err) { showError('Failed to delete: ' + err.message); }
     });
   });
 }

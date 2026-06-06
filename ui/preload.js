@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getLatestResult: ()       => ipcRenderer.invoke('results:getLatest'),
   listResults:     ()       => ipcRenderer.invoke('results:list'),
   loadResult:      (fpath)  => ipcRenderer.invoke('results:load', fpath),
+  deleteResult:    (fpath)  => ipcRenderer.invoke('results:delete', fpath),
 
   // ── Auth ────────────────────────────────────────────────────────────────────
   isLoggedIn:      ()  => ipcRenderer.invoke('auth:isLoggedIn'),
