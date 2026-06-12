@@ -476,6 +476,25 @@ async function run(mergePayload, cfg) {
     return null;
   }
 
+  // Single body-text sweep, run once per role (not per track). Consolidates the
+  // disguised-arrangement and hidden-location regexes that previously ran inline
+  // inside the per-track loop, and surfaces hidden constraints for flagging.
+  function analyzeBody(descBlob, title) {
+    const mH = DISGUISED_HYBRID.exec(descBlob);
+    const mI = DISGUISED_INPERSON.exec(descBlob);
+    const statePins = [];
+    const re = new RegExp(REMOTE_STATE_LOC.source, 'gi');
+    let sm;
+    while ((sm = re.exec(descBlob)) !== null) statePins.push(sm[0].trim());
+    return {
+      hybridSnippet:   mH ? mH[0].slice(0, 60) : null,
+      inpersonSnippet: mI ? mI[0].slice(0, 60) : null,
+      remoteSignal:    REMOTE_WORK_SIGNAL.test(descBlob + ' ' + title),
+      mustReside:      MUST_RESIDE.test(descBlob),
+      statePins:       [...new Set(statePins)],
+    };
+  }
+
   // ── Pre-batch geocoding ────────────────────────────────────────────────────
   // Collect every unique non-remote location that will need a radius check and
   // geocode them upfront before the eval loop. This deduplicates locations across
@@ -546,6 +565,9 @@ async function run(mergePayload, cfg) {
     if (wbEff === 'hybrid' && REMOTE_WORK_SIGNAL.test(resps + ' ' + req + ' ' + pref)) {
       wbEff = 'remote';
     }
+
+    // One body-text sweep for this role, reused by the per-track gates below.
+    const bodyArr = analyzeBody(`${resps} ${req}`, title);
 
     // ── Universal hard disqualifiers ────────────────────────────────────────
     let done = false;
@@ -663,21 +685,16 @@ async function run(mergePayload, cfg) {
 
       // ── Disguised hybrid/in-person ─────────────────────────────────────────
       if (wbEff === 'remote' && !acceptedWt.has('hybrid')) {
-        const descBlob = resps + ' ' + req;
-        const mHybrid = DISGUISED_HYBRID.exec(descBlob);
-        const mInprsn = DISGUISED_INPERSON.exec(descBlob);
-        if (mHybrid) {
-          const snippet = mHybrid[0].slice(0, 60);
-          hybridWarnings.push(`${company} - ${title}: disguised hybrid '${snippet}'`);
-          trackRejs[trackId] = `Track ${trackId}: Disguised hybrid - '${snippet}'`; continue;
+        if (bodyArr.hybridSnippet) {
+          hybridWarnings.push(`${company} - ${title}: disguised hybrid '${bodyArr.hybridSnippet}'`);
+          trackRejs[trackId] = `Track ${trackId}: Disguised hybrid - '${bodyArr.hybridSnippet}'`; continue;
         }
-        if (mInprsn) {
-          const snippet = mInprsn[0].slice(0, 60);
-          hybridWarnings.push(`${company} - ${title}: disguised in-person '${snippet}'`);
-          trackRejs[trackId] = `Track ${trackId}: Disguised in-person - '${snippet}'`; continue;
+        if (bodyArr.inpersonSnippet) {
+          hybridWarnings.push(`${company} - ${title}: disguised in-person '${bodyArr.inpersonSnippet}'`);
+          trackRejs[trackId] = `Track ${trackId}: Disguised in-person - '${bodyArr.inpersonSnippet}'`; continue;
         }
         const locSignalsRemote = /\bremote\b/i.test(locDisplay || '') || locOffersRemote;
-        if (!locSignalsRemote && !REMOTE_WORK_SIGNAL.test(resps + ' ' + req + ' ' + title)) {
+        if (!locSignalsRemote && !bodyArr.remoteSignal) {
           trackRejs[trackId] = `Track ${trackId}: Remote-tagged but no remote-work language in JD - likely mislabeled (${locDisplay || 'no location'})`; continue;
         }
       }
@@ -789,6 +806,23 @@ async function run(mergePayload, cfg) {
       if (domainCap)      notesList.push(`Domain cap -> C (D3=${d3})`);
       if (isPrestige && mid !== null && mid < track.salary_floor) notesList.push(`Salary $${(mid/1000).toFixed(0)}K - prestige buffer applied`);
 
+      // Additive hidden-constraint flag for remote roles. Does NOT reject or
+      // reclassify (the geo gate above already rejects clear exclusions); it only
+      // marks roles whose body hides a hybrid/state-pin/residency signal so the
+      // pill renders "Remote?" and the detail lands in the expandable notes.
+      let arrangementUncertain = false;
+      if (wbEff === 'remote') {
+        const hidden = [];
+        if (bodyArr.hybridSnippet)    hidden.push(`possible hybrid: '${bodyArr.hybridSnippet}'`);
+        if (bodyArr.statePins.length) hidden.push(`location-pinned: ${bodyArr.statePins.join(', ')}`);
+        if (bodyArr.mustReside)       hidden.push('residency requirement in description');
+        if (hidden.length) {
+          arrangementUncertain = true;
+          flags.push('Remote? - hidden location/arrangement constraint in description - verify before applying');
+          notesList.push(`Remote? - ${hidden.join('; ')}`);
+        }
+      }
+
       const prescreen = {
         title:       { pass: true,  note: 'Title accepted' },
         arrangement: { pass: true,  note: `Work arrangement: ${wbEff} accepted on ${track.label}` },
@@ -808,6 +842,7 @@ async function run(mergePayload, cfg) {
         location: locDisplay, match_pct: pct, posted_days: postedDays,
         d1, d2, d3, d4, d5, d6, score: Math.round(scoreVal * 100) / 100,
         fit, grade: finalGrade, prescreen, flags, notes: notesList.join('; '),
+        arrangement_uncertain: arrangementUncertain,
         ats, sp,
       });
       accepted = true;
@@ -886,6 +921,7 @@ async function run(mergePayload, cfg) {
       role_cat:         e.role_cat,
       track:            e.track,
       work_type_bucket: e.work_type_eff,
+      arrangement_uncertain: !!e.arrangement_uncertain,
       hybrid_days:      null,
       posted,
       posted_days:      pd ?? null,

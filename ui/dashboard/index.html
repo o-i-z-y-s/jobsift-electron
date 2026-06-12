@@ -1453,7 +1453,8 @@ function roleRowPair(r, colspan) {
     'hybrid':    { label: 'Hybrid',    cls: 'type-hybrid' },
     'in-person': { label: 'In-Person', cls: 'type-inperson' },
   };
-  const wt = typeMap[r.work_type_bucket] || { label: r.work_type_bucket || '-', cls: '' };
+  const wtBase = typeMap[r.work_type_bucket] || { label: r.work_type_bucket || '-', cls: '' };
+  const wt = { ...wtBase, label: wtBase.label + (r.arrangement_uncertain ? '?' : '') };
 
   const capped    = r.fit && r.grade && r.fit !== r.grade;
   const capArrow  = capped ? `<span class="cap-arrow" title="Capped from ${r.fit}">↓</span>` : '';
@@ -1656,7 +1657,8 @@ function rejRowPair(r, colspan) {
     'hybrid':    { label: 'Hybrid',    cls: 'type-hybrid' },
     'in-person': { label: 'In-Person', cls: 'type-inperson' },
   };
-  const wt = typeMap[r.work_type_bucket] || { label: r.work_type_bucket || '-', cls: '' };
+  const wtBase = typeMap[r.work_type_bucket] || { label: r.work_type_bucket || '-', cls: '' };
+  const wt = { ...wtBase, label: wtBase.label + (r.arrangement_uncertain ? '?' : '') };
 
   const ageTier    = r.age_tier || 'Unknown';
   const postedHtml = `<span class="posted-${ageTier}">${esc(r.posted || 'Unknown')}</span>`;

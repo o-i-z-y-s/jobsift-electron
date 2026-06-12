@@ -135,7 +135,6 @@ function ghSalary(metaList, contentText) {
         const n = parseDollar(m[0]);
         if (n !== null && n >= 10000) amounts.push(n);
       }
-      DOLLAR_RE.lastIndex = 0;
       continue;
     }
     if (typeof raw === 'number') {
@@ -148,7 +147,6 @@ function ghSalary(metaList, contentText) {
       const n = parseDollar(m[0]);
       if (n !== null && n >= 10000) amounts.push(n);
     }
-    DOLLAR_RE.lastIndex = 0;
   }
 
   const unique = [...new Set(amounts.filter(v => v >= 10000).map(Math.round))].sort((a, b) => a - b);
@@ -287,7 +285,6 @@ async function ghSalaryFromDetail(slug, jobId, prefetched) {
         const n = parseDollar(m[0]);
         if (n !== null && n >= 10000) found.push(n);
       }
-      DOLLAR_RE.lastIndex = 0;
     } else if (Array.isArray(obj)) {
       obj.forEach(v => found.push(...scan(v)));
     } else if (obj && typeof obj === 'object') {
@@ -297,31 +294,6 @@ async function ghSalaryFromDetail(slug, jobId, prefetched) {
   }
   const amounts = [...new Set(scan(data).map(Math.round))].sort((a, b) => a - b);
   return amountsToSalary(amounts);
-}
-
-const PAY_HDR_RE = /\b(?:pay\s+and\s+benefits|compensation(?:\s+(?:&|and)\s+benefits)?|salary\s+range|pay\s+range|total\s+compensation)\b/i;
-
-async function htmlSalaryFallback(jobUrl, signal = null) {
-  if (!jobUrl) return '';
-  try {
-    const r = await fetchRetry(jobUrl, { redirect: 'follow' }, 3, signal);
-    if (r.status !== 200) return '';
-    const text = stripHtml(await r.text());
-    const hm = PAY_HDR_RE.exec(text);
-    if (hm) {
-      const window_ = text.slice(hm.index + hm[0].length, hm.index + hm[0].length + 600);
-      const amounts = collectAmounts(window_);
-      if (amounts.length >= 2) return `$${amounts[0].toLocaleString()} - $${amounts[amounts.length - 1].toLocaleString()}`;
-      if (amounts.length) return `$${amounts[0].toLocaleString()}`;
-    }
-    const amounts = collectAmounts(text);
-    if (amounts.length >= 2) {
-      const lo = amounts[0], hi = amounts[amounts.length - 1];
-      if (lo >= 50000 && hi / lo <= 3.0) return `$${lo.toLocaleString()} - $${hi.toLocaleString()}`;
-    }
-    if (amounts.length === 1 && amounts[0] >= 50000) return `$${amounts[0].toLocaleString()}`;
-  } catch { /* ignore */ }
-  return '';
 }
 
 async function scrapeGreenhouse(company, board, titleMatches, signal = null) {
@@ -364,8 +336,6 @@ async function scrapeGreenhouse(company, board, titleMatches, signal = null) {
       const better = await ghLocationFromDetail(board, job.id, detailData);
       if (better) finalLoc = better;
     }
-
-    if (!salary) salary = await htmlSalaryFallback(jobUrl, signal);
 
     const [resp_, req_, pref_] = splitDescription(contentText);
     const wt = normalizeWorkType(finalLoc);

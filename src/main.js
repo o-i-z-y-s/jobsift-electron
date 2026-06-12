@@ -136,11 +136,17 @@ let passControl  = null;   // { abort: bool } - lets the user skip the current J
 
 const PRELOAD = path.join(__dirname, '..', 'ui', 'preload.js');
 
+// Window/taskbar icon (the same magnifier glyph used by the tray). In a packaged
+// build the installer/desktop icon comes from electron-builder.yml; this sets the
+// window and taskbar icon for dev runs and as a belt-and-suspenders in production.
+const ICON_PATH = path.join(__dirname, '..', 'resources', 'icon.png');
+
 // ── Window factory ────────────────────────────────────────────────────────────
 
 function makeWin(opts = {}) {
   const win = new BrowserWindow({
     show: false,
+    icon: ICON_PATH,
     webPreferences: {
       preload: PRELOAD,
       contextIsolation: true,
@@ -204,6 +210,7 @@ function getLogin() {
     loginWin = new BrowserWindow({
       width: 1024, height: 768,
       title: 'Sign in to Jobright.ai',
+      icon: ICON_PATH,
       webPreferences: {
         contextIsolation: true,
         nodeIntegration: false,
@@ -329,7 +336,8 @@ async function checkLoggedIn() {
     return cookies.some(c => {
       const live = !c.expirationDate || c.expirationDate > now;
       if (!live) return false;
-      if (ANALYTICS_COOKIE_RE.test(c.name)) return false;
+      // AUTH_COOKIE_RE is the exact "session_id" name, which no analytics cookie
+      // matches, so no separate analytics filter is needed here.
       return AUTH_COOKIE_RE.test(c.name);
     });
   } catch {
