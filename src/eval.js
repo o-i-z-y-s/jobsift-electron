@@ -2,14 +2,18 @@
 
 /**
  * src/eval.js
- * Port of eval_jobs.py — scoring engine.
- * run(mergePayload, cfg) -> evaluated JSON object matching HANDOFF §4 output format.
+ * Scoring engine.
+ * run(mergePayload, cfg) -> evaluated JSON with { meta, accepted:{roles}, rejected:{roles} },
+ * which is the shape ui/dashboard/index.html reads.
  * Async because geo-checking requires network calls (Nominatim API with local cache).
  */
 
 const { app } = require('electron');
 const fs   = require('fs');
 const path = require('path');
+const { employmentTypeOf, sourcesFromConfig, postedByAll, groupSameJob, SOURCE_RANK, NOT_STATED } = require('./sources');
+const { migrateConfig, criteriaFromConfig, scoreJob, matchRole, ageAdjust, acceptFor, industryRequired, radiusFor,
+        ACCEPT, ACCEPT_LABEL } = require('./criteria');
 
 // ── Geocode cache ─────────────────────────────────────────────────────────────
 
@@ -225,37 +229,6 @@ function ageLabel(days) {
   return '31+d';
 }
 
-// ── Grade helpers ─────────────────────────────────────────────────────────────
-
-function grade(score, track) {
-  if (score >= track.grade_a) return 'A';
-  if (score >= track.grade_b) return 'B';
-  if (score >= track.grade_c) return 'C';
-  return 'D';
-}
-
-function applyAgeCap(g, days) {
-  if (days === null || days === undefined) return [g, null];
-  let cap = null, label = null;
-  if (days > 30)      { cap = 'C'; label = `${Math.floor(days)}d old - capped to C`; }
-  else if (days > 21) { cap = 'B'; label = `${Math.floor(days)}d old - capped to B`; }
-  else return [g, null];
-  const order = ['A', 'B', 'C', 'D'];
-  if (order.indexOf(g) < order.indexOf(cap)) return [cap, label];
-  return [g, null];
-}
-
-// ── Scoring tier helpers ──────────────────────────────────────────────────────
-
-function scoreTiers(text, tiers) {
-  const lower = (text || '').toLowerCase();
-  for (const tier of (tiers || [])) {
-    if ('default' in tier) return tier.default;
-    if ((tier.keywords || []).some(kw => lower.includes(kw.toLowerCase()))) return tier.score;
-  }
-  return 1;
-}
-
 // ── URL normalization for dedup ───────────────────────────────────────────────
 
 function normalizeUrl(url) {
@@ -298,7 +271,8 @@ function roleCategory(title, roleCategories) {
  * mergePayload: { results: [], scan_label, date, days_ago }
  * cfg: parsed config.json
  */
-async function run(mergePayload, cfg) {
+async function run(mergePayload, cfgIn) {
+  const cfg         = migrateConfig(cfgIn).config;   // no-op for a current config
   const resultsRaw  = mergePayload.results || [];
   const scanLabel   = mergePayload.scan_label || 'This scan';
   const today       = mergePayload.date || new Date().toISOString().slice(0, 10);
@@ -311,40 +285,21 @@ async function run(mergePayload, cfg) {
   for (const t of (cfg.tracks || [])) tracks[t.key] = t;
   const trackPri = Object.fromEntries(Object.keys(tracks).map((k, i) => [k, i]));
 
-  // Synthetic copies from pipeline.generate_copies
-  const genCopies = cfg.pipeline?.generate_copies || {};
-  const synthCopies = [];
-  for (const r of resultsRaw) {
-    const srcPass = r.search_pass || '';
-    if (srcPass in genCopies) {
-      synthCopies.push({ ...r, search_pass: genCopies[srcPass] });
-    }
-  }
-  const allResults = [...resultsRaw, ...synthCopies];
-  console.log(`  ${allResults.length} listings to evaluate (${synthCopies.length} synthetic copies)`);
+  const allResults = resultsRaw;
+  console.log(`  ${allResults.length} listings to evaluate`);
 
   // ── Pre-build regexes ──────────────────────────────────────────────────────
 
   const rf          = cfg.rejection_filters  || {};
   const titleFilt   = cfg.title_filters      || {};
   const compLists   = cfg.company_lists      || {};
-  const domainScor  = cfg.domain_scoring     || {};
-  const scoring     = cfg.scoring            || {};
+  const crit        = criteriaFromConfig(cfg);
 
-  const TITLE_REQUIRE_RE     = buildRe(titleFilt.title_require     || []);
   const TITLE_BLOCK_RE       = buildRe(titleFilt.title_block       || []);
   const BLOCKED_INDUSTRIES_RE = buildRe(rf.blocked_industries      || []);
   const BLOCKED_COMPANIES_RE  = buildRe(compLists.blocked_companies || []);
-  const BLOCKED_AGENCIES_RE   = buildRe(compLists.blocked_agencies  || []);
   const TARGET_COMPANIES_RE   = buildRe(compLists.target_companies  || []);
   const DESCRIPTION_BLOCKER_RE = buildRe(rf.description_blockers   || []);
-
-  const D3_TIERS = {
-    5: buildRe(domainScor.tier5 || []),
-    4: buildRe(domainScor.tier4 || []),
-    3: buildRe(domainScor.tier3 || []),
-    2: buildRe(domainScor.tier2 || []),
-  };
 
   const DOMAIN_EXP_INDS = rf.domain_experience_industries || [];
   const domIndPat = DOMAIN_EXP_INDS.length
@@ -355,10 +310,15 @@ async function run(mergePayload, cfg) {
   const DOMAIN_EXP_IN    = domIndPat ? new RegExp(`\\bexperience\\s+(?:in|with|within|working\\s+in)\\s+(?:the\\s+)?(?:${domIndPat})(?:\\s+(?:industry|sector|space|market|domain|environment))?\\b`, 'i') : null;
   const DOMAIN_EXP_REV   = domIndPat ? new RegExp(`\\b(?:${domIndPat})\\s+experience\\b`, 'i') : null;
 
-  const maxExpYrs = rf.max_experience_years || 10;
-  const expNums   = Array.from({ length: 31 - maxExpYrs }, (_, i) => maxExpYrs + i).join('|');
-  const HIGH_EXP_BAR = new RegExp(
-    `\\b(${expNums})\\+?\\s*years?[''s]?\\s+(?:of\\s+)?(?:(?:relevant|related|progressive|professional|combined)\\s+)?(?:experience|program\\s+management|project\\s+management|implementing|managing)\\b` +
+  // Both limits are optional: blank means no limit. Years are matched as
+  // literal numbers from the limit up to 30.
+  const limit = v => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v))) ? null : Number(v);
+  const maxExpYrs = limit(rf.max_experience_years);
+  const maxTravel = limit(rf.max_travel_pct);
+  const expNums   = maxExpYrs >= 1 && maxExpYrs <= 30
+    ? Array.from({ length: 31 - maxExpYrs }, (_, i) => maxExpYrs + i).join('|') : null;
+  const HIGH_EXP_BAR = expNums && new RegExp(
+    `\\b(${expNums})\\+?\\s*years?[''s]?\\s+(?:of\\s+)?(?:(?:relevant|related|progressive|professional|combined)\\s+)?(?:[a-z][\\w-]*\\s+){0,2}?(?:experience|management|implementing|managing)\\b` +
     `|\\b(?:minimum(?:\\s+of)?|a\\s+minimum\\s+of|over|at\\s+least)\\s+(${expNums})\\s*\\+?\\s*years?\\b`,
     'i',
   );
@@ -369,9 +329,8 @@ async function run(mergePayload, cfg) {
   const TRAVEL_HEAVY    = /\b(extensive travel|heavy travel|frequent travel|significant travel|up to 75%|up to 50%|50% travel|75% travel)\b/i;
   const DISGUISED_HYBRID = /\b([2-5]|two|three|four|five)\s*(?:[-–]\s*\d+)?\s*days?\s+(?:a|per)\s+week\s*(?:in\s*(?:the\s*)?(?:office|person|site|building))?|(?:in[\s\-]?(?:office|person|site))\s+(?:[2-5]|two|three|four|five)\s+days?\s+(?:a|per)\s+week|(?:on[\s\-]?site|in[\s\-]?office)\s+(?:presence|requirement|days?)[^.]{0,40}(?:\bweek(?:ly)?\b)/i;
   const DISGUISED_INPERSON = /(?:this\s+)?(?:role|position|job)\s+is\s+(?:fully\s+)?(?:on[\s\-]?site|in[\s\-]?person)|(?:must|required\s+to)\s+be\s+(?:on[\s\-]?site|in[\s\-]?person|in\s+(?:the\s+)?office)|100\s*%\s*(?:on[\s\-]?site|in[\s\-]?person)|fully\s+(?:on[\s\-]?site|in[\s\-]?person)(?!\s+interview)|not\s+(?:eligible|available)\s+for\s+remote|no\s+remote\s+(?:work\s+)?(?:option|available|allowed|offered)|(?:local|in[\s\-]?person)\s+candidates?\s+only/i;
-  const ONE_DAY_HYBRID  = /\b1\s+day\s+(?:a|per)\s+week|one\s+day\s+(?:a|per)\s+week|(?:in[\s\-]?(?:office|person|site))\s+1\s+day\s+(?:a|per)\s+week|once\s+(?:a|per)\s+week\s+in\s+(?:the\s+)?(?:office|person)/i;
   const REMOTE_NON_USA  = /\b(global|worldwide|world[.\-\s]?wide|anywhere|international|emea|apac|latam|united\s+kingdom|england|uk\b|ireland|dublin|canada|toronto|vancouver|montreal|ottawa|calgary|edmonton|germany|berlin|munich|france|paris|netherlands|amsterdam|spain|madrid|italy|milan|rome|sweden|stockholm|switzerland|zurich|belgium|brussels|portugal|lisbon|australia|sydney|melbourne|india|bangalore|bengaluru|mumbai|hyderabad|pune|chennai|japan|tokyo|south\s+korea|seoul|china|beijing|shanghai|shenzhen|singapore|israel|tel\s+aviv|dubai|uae|brazil|s[aã]o\s+paulo|argentina|buenos\s+aires|colombia)\b/i;
-  const IRL_INTERNATIONAL = /\b(united\s+kingdom|england|wales|scotland|northern\s+ireland|netherlands|holland|amsterdam|japan|tokyo|osaka|south\s+korea|republic\s+of\s+korea|seoul|united\s+arab\s+emirates|abu\s+dhabi|dubai|israel|tel\s+aviv|germany|france|spain|italy|australia|singapore|india)\b/i;
+  const ONSITE_INTERNATIONAL = /\b(united\s+kingdom|england|wales|scotland|northern\s+ireland|netherlands|holland|amsterdam|japan|tokyo|osaka|south\s+korea|republic\s+of\s+korea|seoul|united\s+arab\s+emirates|abu\s+dhabi|dubai|israel|tel\s+aviv|germany|france|spain|italy|australia|singapore|india)\b/i;
   const FACILITY_CODE_RE = /(?:[A-Z]{1,4}\s*[-:]\s*\d{3,}|store\s+support\s+cent(?:er|re)|distribution\s+cent(?:er|re)|fulfillment\s+cent(?:er|re)|warehouse\s+\d)/i;
   const REMOTE_WORK_SIGNAL = /\b(?:fully|completely|100\s*%|entirely)[\s\-]+remote\b|\bremote[\s\-]+(?:first|only|position|role|job|opportunity|eligible|work|option|friendly)\b|\bwork(?:ing)?[\s\-]+(?:from[\s\-]+home|remotely)\b|\b(?:telecommut|wfh)\b|\bthis\s+(?:role|position|job)\s+is\s+remote\b|\beligible\s+for\s+remote\b|\bremote\s+work\s+(?:is\s+)?(?:available|allowed|supported|offered)\b|\bwork\s+from\s+anywhere\b|\bno\s+office\s+requirement\b|\bremote\s+employees?\b|\bcategorized\s+as\s+(?:a\s+)?remote\b|\bwork\s+from\s+(?:home|anywhere\b|a\s+physical\s+location)|\bno\s+permanent\s+(?:corporate\s+)?office\b/i;
   const LOC_REMOTE_OPTION = /\bremote\s+within\b|\bor\s+remote\b|^\s*(?:united\s+states(?:\s+of\s+america)?|u\.s\.a?|usa?|north\s+america)\s*$/i;
@@ -385,13 +344,11 @@ async function run(mergePayload, cfg) {
   const trackTargetRe = {};
   const trackTitleReqRe = {};
   const trackTitleBlkRe = {};
-  const trackLevelCapRe = {};
   for (const [tid, t] of Object.entries(tracks)) {
     trackExclRe[tid]     = buildRe(t.excluded_companies || []);
     trackTargetRe[tid]   = buildRe(t.target_companies   || []);
     trackTitleReqRe[tid] = (t.title_require || []).length ? buildRe(t.title_require) : null;
     trackTitleBlkRe[tid] = buildRe(t.title_block || []);
-    trackLevelCapRe[tid] = (t.level_cap_b || []).length ? buildRe(t.level_cap_b) : null;
   }
 
   // Vague-state pattern from track target_locations
@@ -415,9 +372,17 @@ async function run(mergePayload, cfg) {
 
   // ── Evaluation loop ──────────────────────────────────────────────────────────
 
+  // Employment type and who posted it, once per listing. Shown on every role,
+  // accepted or rejected, and counted for the whole scrape.
+  const src  = sourcesFromConfig(cfg);
+  const byAll = postedByAll(allResults, src);
+  const info = allResults.map((r, i) => ({ emp: employmentTypeOf(r), by: byAll[i] }));
+
   const acceptedRaw = [];
   const rejectedRaw = [];
   const hybridWarnings = [];
+
+  const bodyText = i => `${allResults[i].responsibilities || ''} ${allResults[i].required_quals || ''}`;
 
   function univRej(jid, idx, title, company, salary, wt, wbEff, loc, pct, postedDays, reason, notes, ats, sp) {
     const firstTrack = Object.keys(tracks)[0] || '';
@@ -425,7 +390,7 @@ async function run(mergePayload, cfg) {
       jid, idx, track: firstTrack, company, title, salary,
       work_type: wt, work_type_eff: wbEff, location: loc,
       match_pct: pct, posted_days: postedDays,
-      reason, notes, ats, sp, role_cat: roleCategory(title, roleCats),
+      reason, notes, ats, sp, text: bodyText(idx), role_cat: roleCategory(title, roleCats),
     });
   }
 
@@ -438,13 +403,6 @@ async function run(mergePayload, cfg) {
     }
     if (TRAVEL_HEAVY.test(text)) pcts.push(50);
     return pcts.length ? Math.max(...pcts) : null;
-  }
-
-  function d3Score(text) {
-    for (const tier of [5, 4, 3, 2]) {
-      if (D3_TIERS[tier].test(text)) return tier;
-    }
-    return 1;
   }
 
   function checkGeoRestriction(loc, ats, card, desc) {
@@ -476,9 +434,8 @@ async function run(mergePayload, cfg) {
     return null;
   }
 
-  // Single body-text sweep, run once per role (not per track). Consolidates the
-  // disguised-arrangement and hidden-location regexes that previously ran inline
-  // inside the per-track loop, and surfaces hidden constraints for flagging.
+  // One body-text sweep per role (not per track): the disguised-arrangement and
+  // hidden-location checks the track loop needs, and hidden constraints to flag.
   function analyzeBody(descBlob, title) {
     const mH = DISGUISED_HYBRID.exec(descBlob);
     const mI = DISGUISED_INPERSON.exec(descBlob);
@@ -500,7 +457,7 @@ async function run(mergePayload, cfg) {
   // geocode them upfront before the eval loop. This deduplicates locations across
   // roles and tracks so each unique string is only geocoded once even when the
   // same city appears in hundreds of listings. The eval loop then hits only the
-  // warm in-memory cache — no per-role network round trips.
+  // warm in-memory cache, no per-role network round trips.
   const geoTargets = new Set(
     Object.values(tracks)
       .filter(t => t.target_location)
@@ -520,7 +477,7 @@ async function run(mergePayload, cfg) {
   if (locationsToGeocode.size > 0) {
     console.log(`  Pre-geocoding ${locationsToGeocode.size} unique locations...`);
     for (const loc of locationsToGeocode) {
-      // geocode() checks cache first — only hits network for new entries
+      // geocode() checks cache first, only hits network for new entries
       const parts = loc.split(/[;•\/]/).map(p => p.trim()).filter(Boolean);
       for (const part of parts) await geocode(part);
     }
@@ -548,13 +505,15 @@ async function run(mergePayload, cfg) {
     const noSalary = lo === null;
     const postedDays = daysFromCard(card);
     const allText  = `${title} ${company} ${resps} ${req} ${pref}`;
+    const travel   = travelPct(allText);
+    const clearancePresent = CLEARANCE_REQ.test(allText) || CLEARANCE_OBTAIN.test(allText);
 
     // Mislabeled in-person: remote-tagged but location is a specific city
     let wtMut = wt;
     const locLead = loc && loc.includes(',') ? loc.split(',')[0].trim() : loc;
     if (/remote/i.test(wt) && loc &&
         !/\b(remote|united\s+states?|usa|anywhere|worldwide|nationwide|virtual|wfh|work\s+from\s+home)\b/i.test(locLead) &&
-        !/\bremote\b/i.test(allText + ' ' + title)) {
+        !/\bremote\b/i.test(allText)) {
       wtMut = 'Onsite';
     }
 
@@ -576,8 +535,12 @@ async function run(mergePayload, cfg) {
       univRej(jid,idx,title,company,salary,wtMut,wbEff,locDisplay,pct,postedDays,'Universal: No job description available - returned empty content','',ats,sp);
       done = true;
     }
-    if (!done && TITLE_REQUIRE_RE.source !== '(?!)' && !TITLE_REQUIRE_RE.test(title)) {
-      univRej(jid,idx,title,company,salary,wtMut,wbEff,locDisplay,pct,postedDays,'Universal: Title does not match required keywords','',ats,sp);
+    if (!done && info[idx].by.kind === 'job_board' && src.reposts === 'reject') {
+      univRej(jid,idx,title,company,salary,wtMut,wbEff,locDisplay,pct,postedDays,`Universal: Reposted by ${company}, a job board or reposting site`,'',ats,sp);
+      done = true;
+    }
+    if (!done && crit.roles.length && !matchRole(title, crit)) {
+      univRej(jid,idx,title,company,salary,wtMut,wbEff,locDisplay,pct,postedDays,"Universal: Title does not match any role you're looking for",'',ats,sp);
       done = true;
     }
     if (!done && BLOCKED_INDUSTRIES_RE.test(allText)) {
@@ -591,13 +554,13 @@ async function run(mergePayload, cfg) {
     if (!done && YEARS_IN_DOMAIN) {
       const myr = YEARS_IN_DOMAIN.exec(req);
       if (myr && parseInt(myr[1], 10) >= 3) {
-        univRej(jid,idx,title,company,salary,wtMut,wbEff,locDisplay,pct,postedDays,`Universal: Requires ${myr[1]}+ yrs non-tech domain experience - '${myr[0].slice(0, 70)}'`,'',ats,sp);
+        univRej(jid,idx,title,company,salary,wtMut,wbEff,locDisplay,pct,postedDays,`Universal: Requires ${myr[1]}+ yrs experience in a Domain Experience industry - '${myr[0].slice(0, 70)}'`,'',ats,sp);
         done = true;
       }
     }
     if (!done && DOMAIN_KNOW_REQ) {
       const mkn = DOMAIN_KNOW_REQ.exec(req);
-      if (mkn) { univRej(jid,idx,title,company,salary,wtMut,wbEff,locDisplay,pct,postedDays,`Universal: Non-tech domain expertise required - '${mkn[0].slice(0,70)}'`,'',ats,sp); done = true; }
+      if (mkn) { univRej(jid,idx,title,company,salary,wtMut,wbEff,locDisplay,pct,postedDays,`Universal: Domain expertise required (Domain Experience industry) - '${mkn[0].slice(0,70)}'`,'',ats,sp); done = true; }
     }
     if (!done && DOMAIN_EXP_IN) {
       const mei = DOMAIN_EXP_IN.exec(req);
@@ -607,14 +570,13 @@ async function run(mergePayload, cfg) {
       const mer = DOMAIN_EXP_REV.exec(req);
       if (mer) { univRej(jid,idx,title,company,salary,wtMut,wbEff,locDisplay,pct,postedDays,`Universal: Domain experience required - '${mer[0].slice(0,80)}'`,'',ats,sp); done = true; }
     }
-    if (!done) {
+    if (!done && HIGH_EXP_BAR) {
       const mexp = HIGH_EXP_BAR.exec(req + ' ' + resps.slice(0, 300));
       if (mexp) { univRej(jid,idx,title,company,salary,wtMut,wbEff,locDisplay,pct,postedDays,`Universal: Experience bar too high - '${mexp[0].slice(0,70)}'`,'',ats,sp); done = true; }
     }
-    if (!done) {
-      const tp = travelPct(allText);
-      if (tp !== null && tp > (rf.max_travel_pct || 25)) {
-        univRej(jid,idx,title,company,salary,wtMut,wbEff,locDisplay,pct,postedDays,`Universal: Travel ${tp}% exceeds ${rf.max_travel_pct}% threshold`,'',ats,sp);
+    if (!done && maxTravel !== null) {
+      if (travel !== null && travel > maxTravel) {
+        univRej(jid,idx,title,company,salary,wtMut,wbEff,locDisplay,pct,postedDays,`Universal: Travel ${travel}% exceeds ${maxTravel}% threshold`,'',ats,sp);
         done = true;
       }
     }
@@ -625,7 +587,7 @@ async function run(mergePayload, cfg) {
     let accepted = false;
 
     for (const [trackId, track] of Object.entries(tracks)) {
-      let locCaOnly    = false;
+      let locStateOnly = false;   // posting gives only the state, no city
       let locGeoUnknown = false;
 
       // ── Geo gate ──────────────────────────────────────────────────────────
@@ -640,13 +602,13 @@ async function run(mergePayload, cfg) {
       } else {
         if (locDisplay && track.target_location) {
           if (VAGUE_STATE_RE.test(locDisplay.trim())) {
-            locCaOnly = true;
-          } else if (IRL_INTERNATIONAL.test(locDisplay)) {
+            locStateOnly = true;
+          } else if (ONSITE_INTERNATIONAL.test(locDisplay)) {
             trackRejs[trackId] = `Geo: International location (${locDisplay})`; continue;
           } else if (FACILITY_CODE_RE.test(locDisplay)) {
             trackRejs[trackId] = `Geo: Location is a facility/store code (${locDisplay})`; continue;
           } else {
-            const radius = track.target_radius_mi ?? 0;
+            const radius = radiusFor(track);
             const inRange = await multiWithinRadius(locDisplay, track.target_location, radius);
             if (inRange === null) {
               // Geocoding failed - state fallback
@@ -683,6 +645,13 @@ async function run(mergePayload, cfg) {
         trackRejs[trackId] = `Track ${trackId}: Remote not accepted on this track`; continue;
       }
 
+      // ── Employment type ───────────────────────────────────────────────────
+      // An empty list accepts every type; a posting that states none passes.
+      const empTypes = track.employment_types || [];
+      if (empTypes.length && info[idx].emp !== NOT_STATED && !empTypes.includes(info[idx].emp)) {
+        trackRejs[trackId] = `Track ${trackId}: ${info[idx].emp} roles not accepted on this track`; continue;
+      }
+
       // ── Disguised hybrid/in-person ─────────────────────────────────────────
       if (wbEff === 'remote' && !acceptedWt.has('hybrid')) {
         if (bodyArr.hybridSnippet) {
@@ -712,7 +681,6 @@ async function run(mergePayload, cfg) {
       }
 
       // ── Seniority gates ────────────────────────────────────────────────────
-      const levelCapped = trackLevelCapRe[trackId]?.test(title) ?? false;
       if (TITLE_BLOCK_RE.test(title)) {
         trackRejs[trackId] = `Track ${trackId}: Blocked title keyword - ${title}`; continue;
       }
@@ -727,19 +695,19 @@ async function run(mergePayload, cfg) {
       }
 
       // ── Clearance ─────────────────────────────────────────────────────────
-      const clearancePresent = CLEARANCE_REQ.test(allText) || CLEARANCE_OBTAIN.test(allText);
+      // Only an explicit 'reject' drops the role; otherwise it is kept and
+      // flagged below, so a track saved without this setting still warns.
       if (clearancePresent && track.clearance_behavior === 'reject') {
         trackRejs[trackId] = `Track ${trackId}: Security clearance required`; continue;
       }
-      const clearanceFlagged = clearancePresent && track.clearance_behavior === 'flag';
 
       // ── Salary gate ────────────────────────────────────────────────────────
       if (noSalary && track.reject_if_no_salary) {
         trackRejs[trackId] = `Track ${trackId}: Salary required on this track - not disclosed`; continue;
       }
 
-      const isPrestige = TARGET_COMPANIES_RE.test(company) || trackTargetRe[trackId].test(company);
-      const salFloor   = isPrestige ? (track.salary_floor - (track.wiggle_room || 0)) : track.salary_floor;
+      const isTarget = TARGET_COMPANIES_RE.test(company) || trackTargetRe[trackId].test(company);
+      const salFloor   = isTarget ? (track.salary_floor - (track.wiggle_room || 0)) : track.salary_floor;
 
       if (track.reject_if_max_below != null && hi !== null && hi < track.reject_if_max_below) {
         trackRejs[trackId] = `Track ${trackId}: Salary ceiling $${Math.floor(hi/1000)}K below $${Math.floor(track.reject_if_max_below/1000)}K minimum`; continue;
@@ -753,58 +721,43 @@ async function run(mergePayload, cfg) {
       if (geoRej) { trackRejs[trackId] = `Track ${trackId}: ${geoRej}`; continue; }
 
       // ── Scoring ───────────────────────────────────────────────────────────
-      const d3 = d3Score(allText);
-      if (track.min_domain_score != null && d3 < track.min_domain_score) {
-        trackRejs[trackId] = `Track ${trackId}: Domain D3=${d3} below minimum ${track.min_domain_score}`; continue;
+      // Match score out of 100 (see criteria.js). The track's bar is checked
+      // on the job's own grade; a posting older than three weeks is accepted
+      // on that grade and then shown one grade lower.
+      // For a target company the allowance lowers the floor for pay points
+      // too, so a role let in by the allowance is not scored as below floor.
+      const match = scoreJob({ title, text: `${title} ${resps} ${req} ${pref}`, mid, noSalary }, crit,
+                             isTarget ? { ...track, salary_floor: salFloor } : track);
+      const ind = match.parts.find(p => p.signal === 'Industry');
+      if (ind && !ind.points && industryRequired(track)) {
+        trackRejs[trackId] = `Track ${trackId}: No listed industry in the posting`; continue;
       }
-
-      const d1 = scoreTiers(title,          scoring.title_tiers        || []);
-      const d2 = scoreTiers(resps + ' ' + title, scoring.scope_tiers   || []);
-      const d4 = scoreTiers(req,             scoring.requirement_tiers  || []);
-
-      // D5: salary competitiveness
-      let d5, salNote;
-      if (noSalary || mid === null) {
-        d5 = 1; salNote = 'Salary not listed';
-      } else if (mid >= track.salary_score_5) { d5 = 5; salNote = `$${(mid/1000).toFixed(0)}K mid`; }
-      else if (mid >= track.salary_score_4)   { d5 = 4; salNote = `$${(mid/1000).toFixed(0)}K mid`; }
-      else if (track.salary_score_3 != null && mid >= track.salary_score_3) { d5 = 3; salNote = `$${(mid/1000).toFixed(0)}K mid`; }
-      else                                    { d5 = 2; salNote = `$${(mid/1000).toFixed(0)}K mid`; }
-
-      // D6: work arrangement fit
-      const wbEffSet = new Set((track.work_types || []).map(w => w.toLowerCase()));
-      let d6;
-      if (wbEff === 'remote')    d6 = 5;
-      else if (wbEff === 'in-person') d6 = wbEffSet.has('onsite') ? 5 : 3;
-      else                       d6 = 4;   // hybrid
-
-      const w = track.score_weights || { d1:1, d2:1, d3:1, d4:1, d5:1 };
-      const scoreVal = d1*(w.d1||1) + d2*(w.d2||1) + d3*(w.d3||1) + d4*(w.d4||1) + d5*(w.d5||1);
-      let fit = grade(scoreVal, track);
-      if (fit === 'D') { trackRejs[trackId] = `Track ${trackId}: Score ${scoreVal.toFixed(2)} - Grade D`; continue; }
-
-      if (levelCapped && fit === 'A') fit = 'B';
-      const domainCap = track.domain_cap_at != null && d3 <= track.domain_cap_at && ['A','B'].includes(fit);
-      if (domainCap) fit = 'C';
-
-      const [finalGrade, ageCapReason] = applyAgeCap(fit, postedDays);
+      if (!match.grade) {
+        trackRejs[trackId] = `Track ${trackId}: Score ${match.score} below 50 - not a match`; continue;
+      }
+      const accept = acceptFor(track);
+      if (!ACCEPT[accept].includes(match.grade)) {
+        trackRejs[trackId] = `Track ${trackId}: Grade ${match.grade} below this track's bar (accepts ${ACCEPT_LABEL[accept]})`; continue;
+      }
+      const aged = ageAdjust(match.grade, postedDays, cfg.settings?.stale_after_days);
 
       // ── Flags and notes ───────────────────────────────────────────────────
       const flags = [], notesList = [];
-      if (locCaOnly)      flags.push('Location is California only - confirm it is within commute range');
+      if (locStateOnly)   flags.push(`Location is listed only as "${locDisplay}" - confirm it is within commute range`);
       if (locGeoUnknown)  flags.push('Location could not be verified - confirm it is within commute range');
-      if (BLOCKED_AGENCIES_RE.test(company)) flags.push('Agency-sourced - verify direct posting');
-      if (isPrestige)     flags.push('Target company');
-      if (clearanceFlagged) flags.push('Clearance required - verify compensation justifies it');
-      if (levelCapped)    flags.push('Level-capped title - grade capped at B');
+      const by = info[idx].by;
+      if (by.kind === 'job_board' && src.reposts === 'flag') {
+        flags.push(`Posted by ${company}, a job board or reposting site: look for the employer's own posting`);
+      } else if (by.boardLink && by.kind !== 'job_board' && src.reposts !== 'off') {
+        flags.push(`Apply link is on ${by.boardLink}: look for the employer's own posting`);
+      }
+      if (clearancePresent) flags.push('Security clearance mentioned - check whether you hold or can obtain it');
       if (noSalary && !track.reject_if_no_salary) flags.push(`Salary not disclosed - cannot verify $${Math.floor(track.salary_floor/1000)}K floor`);
-      if (ageCapReason)   notesList.push(ageCapReason);
+      if (aged.note)      notesList.push(aged.note);
       if (noSalary)       notesList.push('Salary not listed');
-      const tp = travelPct(allText);
-      if (tp)             notesList.push(`${tp}% travel noted`);
+      if (travel)         notesList.push(`${travel}% travel noted`);
       if (wbEff === 'hybrid') notesList.push('Hybrid work arrangement');
-      if (domainCap)      notesList.push(`Domain cap -> C (D3=${d3})`);
-      if (isPrestige && mid !== null && mid < track.salary_floor) notesList.push(`Salary $${(mid/1000).toFixed(0)}K - prestige buffer applied`);
+      if (isTarget && mid !== null && mid < track.salary_floor) notesList.push(`Salary $${(mid/1000).toFixed(0)}K - target company allowance applied`);
 
       // Additive hidden-constraint flag for remote roles. Does NOT reject or
       // reclassify (the geo gate above already rejects clear exclusions); it only
@@ -830,20 +783,21 @@ async function run(mergePayload, cfg) {
           pass: !(noSalary && track.reject_if_no_salary),
           note: noSalary
             ? `Salary not disclosed - verify $${Math.floor(track.salary_floor/1000)}K floor before applying`
-            : `Salary ${salNote} meets $${Math.floor(track.salary_floor/1000)}K floor`,
+            : `Salary $${(mid/1000).toFixed(0)}K mid meets $${Math.floor(track.salary_floor/1000)}K floor`,
         },
       };
-      if (d3 <= 1) prescreen.domain = { pass: false, note: `Domain D3=${d3} - non-tech sector` };
-      else if (d3 >= 4) prescreen.domain = { pass: true, note: `Domain D3=${d3} - software` };
+      if (ind) prescreen.industry = ind.points
+        ? { pass: true,  note: `Industry: ${ind.detail}` }
+        : { pass: false, note: 'Industry: none of your listed industries found' };
 
       acceptedRaw.push({
         jid, idx, track: trackId, role_cat: roleCategory(title, roleCats),
         company, title, salary, work_type: wtMut, work_type_eff: wbEff,
         location: locDisplay, match_pct: pct, posted_days: postedDays,
-        d1, d2, d3, d4, d5, d6, score: Math.round(scoreVal * 100) / 100,
-        fit, grade: finalGrade, prescreen, flags, notes: notesList.join('; '),
-        arrangement_uncertain: arrangementUncertain,
-        ats, sp,
+        match: { score: match.score, parts: match.parts },
+        fit: match.grade, grade: aged.grade, prescreen, flags, notes: notesList.join('; '),
+        arrangement_uncertain: arrangementUncertain, target_company: isTarget,
+        ats, sp, text: `${resps} ${req}`,
       });
       accepted = true;
       break;
@@ -858,7 +812,7 @@ async function run(mergePayload, cfg) {
         jid, idx, track: reportTrack, company, title, salary,
         work_type: wtMut, work_type_eff: wbEff, location: locDisplay,
         match_pct: pct, posted_days: postedDays,
-        reason: primaryRej, notes: allRejNotes, ats, sp,
+        reason: primaryRej, notes: allRejNotes, ats, sp, text: `${resps} ${req}`,
         role_cat: roleCategory(title, roleCats),
       });
     }
@@ -892,7 +846,31 @@ async function run(mergePayload, cfg) {
       rejByKey[k] = e;
     }
   }
-  const rejectedFinal = Object.values(rejByKey);
+  let rejectedFinal = Object.values(rejByKey);
+
+  // ── One job, one listing ──────────────────────────────────────────────────
+  // The same title with mostly the same description from different companies
+  // is one job: an employer's own posting, staffing firms filling it, job
+  // boards copying it. Where any copy was accepted, the best accepted copy is
+  // kept (employer, then staffing firm, then job board; then grade and score)
+  // and every other copy, accepted or rejected, is listed on it instead.
+  const gradeRank = g => ({ A: 0, B: 1, C: 2 }[g] ?? 3);
+  const groups = groupSameJob([...acceptedFinal.map(e => ({ e, ok: true })), ...rejectedFinal.map(e => ({ e, ok: false }))]
+    .map(x => ({ ...x, title: x.e.title, company: x.e.company, text: x.e.text })));
+  const folded = new Set();
+  for (const g of groups) {
+    if (g.length < 2 || !g.some(x => x.ok)) continue;
+    const keep = g.filter(x => x.ok).sort((a, b) =>
+      SOURCE_RANK[info[a.e.idx].by.kind] - SOURCE_RANK[info[b.e.idx].by.kind] ||
+      gradeRank(a.e.grade) - gradeRank(b.e.grade) || b.e.match.score - a.e.match.score ||
+      trackPri[a.e.track] - trackPri[b.e.track])[0];
+    keep.e.also_posted_by = g.filter(x => x !== keep).map(x => ({
+      company: x.e.company, apply_url: x.e.ats, posted_by: info[x.e.idx].by.label,
+    }));
+    for (const x of g) if (x !== keep) folded.add(x.e);
+  }
+  const acceptedKept = acceptedFinal.filter(e => !folded.has(e));
+  rejectedFinal = rejectedFinal.filter(e => !folded.has(e));
 
   // ── Build output ───────────────────────────────────────────────────────────
 
@@ -900,15 +878,15 @@ async function run(mergePayload, cfg) {
   const trackCount = Object.fromEntries(Object.keys(tracks).map(k => [k, 0]));
   const catCount   = {};
 
-  const acceptedSorted = [...acceptedFinal].sort((a, b) =>
-    a.grade.localeCompare(b.grade) || a.company.toLowerCase().localeCompare(b.company.toLowerCase())
+  const acceptedSorted = [...acceptedKept].sort((a, b) =>
+    a.grade.localeCompare(b.grade) || b.match.score - a.match.score ||
+    a.company.toLowerCase().localeCompare(b.company.toLowerCase())
   );
 
   const rolesOut = acceptedSorted.map(e => {
     gradeCount[e.grade] = (gradeCount[e.grade] || 0) + 1;
     trackCount[e.track] = (trackCount[e.track] || 0) + 1;
     catCount[e.role_cat] = (catCount[e.role_cat] || 0) + 1;
-    const dims = Object.fromEntries(['d1','d2','d3','d4','d5','d6'].map(k => [k, { score: e[k], rationale: '' }]));
     const trackLabel = e.track in tracks ? `Track ${e.track} - ${tracks[e.track].label}` : `Track ${e.track}`;
     const notes = e.notes ? `${trackLabel}. ${e.notes}` : `${trackLabel}.`;
     const pd = e.posted_days;
@@ -919,6 +897,10 @@ async function run(mergePayload, cfg) {
       location:         e.location,
       role_title:       e.title,
       role_cat:         e.role_cat,
+      employment_type:  info[e.idx].emp,
+      posted_by:        { kind: info[e.idx].by.kind, label: info[e.idx].by.label, reasons: info[e.idx].by.reasons },
+      also_posted_by:   e.also_posted_by || [],
+      target_company:   !!e.target_company,
       track:            e.track,
       work_type_bucket: e.work_type_eff,
       arrangement_uncertain: !!e.arrangement_uncertain,
@@ -931,10 +913,7 @@ async function run(mergePayload, cfg) {
       fit:              e.fit,
       grade:            e.grade,
       apply_url:        e.ats,
-      weighted_score:   e.score,
-      d6_cap:           null,
-      age_cap:          null,
-      dimensions:       dims,
+      match:            e.match,
       prescreen:        e.prescreen,
       flags:            e.flags,
       notes,
@@ -943,37 +922,53 @@ async function run(mergePayload, cfg) {
   });
 
   // Rejection categorization
-  const CAT_ORDER  = ['salary_floor','clearance','geo_restriction','travel','title_level','blocked_title','domain_exclusion','prescreen','grade_d','other'];
+  // Every reason above is a fixed phrase plus variable detail: a track key, a
+  // company, a job title, a snippet of the posting, a location. Only the fixed
+  // phrase is classified, because the detail is free text: matching words
+  // anywhere would file a blocked company named "Staffing Geo Corp" as a geo
+  // rule, or a job title containing "Salary" as a pay rejection.
+  // Tier: 'tier1' = near miss (right kind of job, wrong terms or place);
+  //       'tier2' = not a fit at all.
+  const CAT_ORDER  = ['salary_floor','salary_missing','clearance','geo_restriction','travel','employment_type','blocked_title','domain_exclusion','repost','prescreen','grade_d','other'];
   const CAT_LABELS = {
-    salary_floor:'Salary Below Floor', title_level:'Title Level Mismatch',
-    blocked_title:'Blocked Title Keyword', domain_exclusion:'Domain / Expertise Exclusion',
-    geo_restriction:'Geographic Restriction', travel:'Travel Requirement',
-    prescreen:'Pre-Screen Failure', clearance:'Clearance / Competitor Conflict',
-    grade_d:'Grade D (Low Score)', other:'Other',
+    salary_floor:'Salary Below Floor', salary_missing:'Salary Not Listed', blocked_title:'Blocked Title Keyword',
+    domain_exclusion:'Domain / Expertise Exclusion', geo_restriction:'Geographic Restriction',
+    travel:'Travel Requirement', prescreen:'Pre-Screen Failure', clearance:'Clearance Required',
+    grade_d:'Score Below Your Bar', employment_type:'Employment Type Not Accepted', repost:'Reposted Listing', other:'Other',
   };
-  const TIER2_SIGS = ['title level','too senior','director','vp ','staff','principal','internship','unpaid','pre-screen','ic depth','check 1','check 2','blocked industry','physical-world','d3=1','irrelevant domain'];
-  const TIER1_SIGS = ['salary','tc midpoint','tc ceiling','no salary','state-restricted','geo','travel','clearance','competitor','experience bar','disguised hybrid'];
+  // [pattern on the fixed phrase, category, tier], first match wins.
+  const REASON_RULES = [
+    [/^salary required on this track/,               'salary_missing',   'tier1'],
+    [/^salary /,                                     'salary_floor',     'tier1'],
+    [/^security clearance required/,                 'clearance',        'tier1'],
+    [/^geo: |^state-restricted remote/,              'geo_restriction',  'tier1'],
+    [/^universal: travel /,                          'travel',           'tier1'],
+    [/^universal: title does not match|^title does not match|blocked keyword in title|^blocked title keyword|^country indicator in title/,
+                                                     'blocked_title',    'tier1'],
+    [/^universal: blocked industry/,                 'domain_exclusion', 'tier2'],
+    [/^no listed industry in the posting/,           'domain_exclusion', 'tier1'],
+    [/^universal: (?:requires .* experience|domain expertise required|domain experience required|experience bar too high)/,
+                                                     'domain_exclusion', 'tier1'],
+    [/^(?:full-time|contract|contract to hire|part-time|temporary|internship) roles not accepted on this track/,
+                                                     'employment_type',  'tier1'],
+    [/^universal: reposted by /,                     'repost',           'tier2'],
+    [/^pre-screen: /,                                'prescreen',        'tier2'],
+    [/^score |^grade [abc] below this track's bar/,  'grade_d',          'tier1'],
+  ];
 
-  function catRej(reason) {
-    const r = reason.toLowerCase();
-    if (/salary|tc ceiling|tc midpoint|no salary/.test(r)) return 'salary_floor';
-    if (/staff|principal|director|vp |too senior|internship|unpaid/.test(r)) return 'title_level';
-    if (/(blocked.*title|title.*keyword|title.*required|country.*title)/.test(r)) return 'blocked_title';
-    if (/domain|blocked industry|experience bar/.test(r)) return 'domain_exclusion';
-    if (/state-restricted|geo/.test(r)) return 'geo_restriction';
-    if (/travel/.test(r)) return 'travel';
-    if (/pre-screen|check 1|check 2|ic depth/.test(r)) return 'prescreen';
-    if (/clearance|competitor/.test(r)) return 'clearance';
-    if (/grade d|score/.test(r)) return 'grade_d';
-    return 'other';
+  function reasonPhrase(reason) {
+    return String(reason || '')
+      .replace(/^Track [^:]+:\s*/, '')          // track keys are user-defined
+      .split(/\s+-\s+|\s+\(|\s+'/)[0]            // drop " - detail", " (detail)", " 'snippet'"
+      .toLowerCase();
   }
-
-  function rejTier(reason) {
-    const r = reason.toLowerCase();
-    if (TIER2_SIGS.some(s => r.includes(s))) return 'tier2';
-    if (TIER1_SIGS.some(s => r.includes(s))) return 'tier1';
-    return 'tier1';
+  function classifyRej(reason) {
+    const p = reasonPhrase(reason);
+    for (const [re, cat, tier] of REASON_RULES) if (re.test(p)) return { cat, tier };
+    return { cat: 'other', tier: 'tier1' };
   }
+  function catRej(reason)  { return classifyRej(reason).cat; }
+  function rejTier(reason) { return classifyRej(reason).tier; }
 
   const catCntRej = {};
   const rejRoles = rejectedFinal.sort((a, b) =>
@@ -990,6 +985,8 @@ async function run(mergePayload, cfg) {
       location:         e.location,
       role_title:       e.title,
       role_cat:         e.role_cat || 'Other',
+      employment_type:  info[e.idx].emp,
+      posted_by:        { kind: info[e.idx].by.kind, label: info[e.idx].by.label, reasons: info[e.idx].by.reasons },
       work_type_bucket: e.work_type_eff,
       posted, posted_days: pd ?? null,
       salary:           e.salary,
@@ -1005,8 +1002,18 @@ async function run(mergePayload, cfg) {
     };
   });
 
+  // What the scrape contained, before any filtering: every employment type and
+  // kind of poster that came up, so nothing is hidden by the rules above.
+  const tally = list => list.reduce((m, k) => (m[k] = (m[k] || 0) + 1, m), {});
+  const found = {
+    employment_types: tally(info.map(x => x.emp)),
+    posted_by:        tally(info.map(x => x.by.label)),
+    same_job_folded:  folded.size,
+  };
+  const foundStr = list => Object.entries(list).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${n} ${k.toLowerCase()}`).join(', ');
+
   // Summary
-  const nTarget  = acceptedFinal.filter(e => e.flags?.some(f => f.includes('Target company'))).length;
+  const nTarget  = acceptedKept.filter(e => e.target_company).length;
   const rejRate  = Math.round(rejectedFinal.length * 100 / (allResults.length || 1));
   const trackParts = Object.entries(tracks).map(([k, t]) => `${trackCount[k] || 0} ${t.label} (${k})`);
   const trackStr = trackParts.length === 1 ? trackParts[0]
@@ -1017,7 +1024,9 @@ async function run(mergePayload, cfg) {
     `Scan (${scanLabel}) of ${allResults.length} listings yielded ${gradeCount.A || 0} Grade-A, ${gradeCount.B || 0} Grade-B, and ${gradeCount.C || 0} Grade-C roles (${rejRate}% rejected).`,
     `By track: ${trackStr}.`,
     nTarget ? `${nTarget} accepted role${nTarget > 1 ? 's' : ''} at target companies.` : `No target company roles accepted (${scanLabel.toLowerCase()}).`,
-  ].join(' ');
+    `The scrape held ${foundStr(found.employment_types)} roles, posted by: ${foundStr(found.posted_by)}.`,
+    found.same_job_folded ? `${found.same_job_folded} duplicate postings of the same job were folded into one listing each.` : '',
+  ].filter(Boolean).join(' ');
 
   const locParts = ['United States (Remote)'];
   for (const [, t] of Object.entries(tracks)) {
@@ -1031,11 +1040,11 @@ async function run(mergePayload, cfg) {
     accepted: {
       meta: {
         date: today, time: scrapeTime, search_term: searchTerm, locations: locationsStr,
-        qualifying_count: acceptedFinal.length, reviewed_count: allResults.length,
+        qualifying_count: acceptedKept.length, reviewed_count: allResults.length,
         total_results: allResults.length,
         grade_a: gradeCount.A || 0, grade_b: gradeCount.B || 0, grade_c: gradeCount.C || 0,
         excluded_count: rejectedFinal.length,
-        track_counts: trackCount, cat_counts: catCount,
+        track_counts: trackCount, cat_counts: catCount, found,
         top_a_companies: [],
         key_observation: keyObs,
         track_labels: Object.fromEntries(Object.entries(tracks).map(([k, t]) => [k, t.label])),
@@ -1046,7 +1055,7 @@ async function run(mergePayload, cfg) {
     rejected: {
       meta: {
         date: today, time: scrapeTime, search_term: searchTerm,
-        total_raw: allResults.length, total_accepted: acceptedFinal.length, total_rejected: rejectedFinal.length,
+        total_raw: allResults.length, total_accepted: acceptedKept.length, total_rejected: rejectedFinal.length,
         ...Object.fromEntries(CAT_ORDER.map(c => [`${c}_count`, catCntRej[c] || 0])),
         key_observation: `${rejectedFinal.length} listings excluded. ` +
           CAT_ORDER.filter(c => catCntRej[c]).map(c => `${CAT_LABELS[c]} (${catCntRej[c]})`).join(', ') + '.',

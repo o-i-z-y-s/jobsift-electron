@@ -1,5 +1,10 @@
 {
+  "config_version": 3,
+  "setup_complete": false,
   "user_state": "",
+  "roles": [],
+  "industries": [],
+  "skills": [],
   "tracks": [
     {
       "key": "TRACK_1",
@@ -7,45 +12,58 @@
       "work_types": [
         "Remote"
       ],
-      "salary_floor": 0,
-      "grade_a": 22,
-      "grade_b": 17,
-      "grade_c": 12,
-      "salary_score_5": 120000,
-      "salary_score_4": 105000,
-      "salary_score_3": 90000,
       "target_location": null,
       "target_radius_mi": null,
+      "salary_floor": 0,
+      "pay_top": null,
+      "pay_good": null,
       "reject_if_max_below": null,
-      "wiggle_room": 0,
-      "clearance_behavior": "reject",
       "reject_if_no_salary": false,
-      "min_domain_score": null,
-      "domain_cap_at": null,
-      "score_weights": {
-        "d1": 1,
-        "d2": 1,
-        "d3": 1,
-        "d4": 1,
-        "d5": 1
-      },
-      "excluded_companies": [],
-      "title_block": [],
+      "wiggle_room": 0,
+      "accept_grades": "ABC",
+      "industry_required": false,
+      "clearance_behavior": "flag",
       "title_require": [],
+      "title_block": [],
+      "excluded_companies": [],
       "target_companies": [],
-      "level_cap_b": []
+      "employment_types": []
     }
   ],
+  "title_filters": {
+    "title_block": [],
+    "card_exclude": []
+  },
   "company_lists": {
     "target_companies": [],
     "blocked_companies": [],
-    "blocked_agencies": [],
-    "premium_agencies": []
+    "staffing_firms": []
   },
-  "title_filters": {
-    "title_require": [],
-    "title_block": [],
-    "card_exclude": []
+  "rejection_filters": {
+    "max_experience_years": null,
+    "max_travel_pct": null,
+    "blocked_industries": [],
+    "domain_experience_industries": [],
+    "description_blockers": []
+  },
+  "role_categories": {
+    "categories": []
+  },
+  "jobright_searches": {
+    "passes": [
+      {
+        "id": "remote",
+        "label": "",
+        "taxonomy": "",
+        "work_model": "remote"
+      },
+      {
+        "id": "local",
+        "label": "",
+        "taxonomy": "",
+        "work_model": "local"
+      }
+    ]
   },
   "ats_boards": {
     "greenhouse": {},
@@ -56,104 +74,51 @@
     "workday_search_terms": []
   },
   "settings": {
-    "dashboard_browser": "chrome",
     "min_match_pct": 60,
     "scroll_pause_ms": 1800,
-    "slow_mo": 25,
-    "detail_workers": 6
-  },
-  "domain_scoring": {
-    "tier5": [],
-    "tier4": [],
-    "tier3": [],
-    "tier2": []
+    "detail_workers": 6,
+    "stale_after_days": 21
   },
   "pipeline": {
-    "search_term": "",
-    "generate_copies": {},
-    "track_routing": []
+    "search_term": ""
   },
-  "scoring": {
-    "title_tiers": [
-      {
-        "score": 5,
-        "keywords": []
-      },
-      {
-        "score": 4,
-        "keywords": []
-      },
-      {
-        "score": 3,
-        "keywords": []
-      },
-      {
-        "default": 1
-      }
+  "sources": {
+    "reposts": "reject",
+    "reposting_sites": [
+      "Dice",
+      "Jobgether",
+      "Lensa",
+      "Jooble",
+      "Talent.com",
+      "ZipRecruiter",
+      "RemoteHunter"
     ],
-    "scope_tiers": [
-      {
-        "score": 5,
-        "keywords": []
-      },
-      {
-        "score": 4,
-        "keywords": []
-      },
-      {
-        "score": 3,
-        "keywords": []
-      },
-      {
-        "score": 2,
-        "keywords": []
-      },
-      {
-        "default": 1
-      }
+    "job_board_links": [
+      "linkedin.com",
+      "dice.com",
+      "ziprecruiter.com",
+      "indeed.com",
+      "glassdoor.com",
+      "monster.com",
+      "careerbuilder.com",
+      "simplyhired.com",
+      "talent.com",
+      "jooble.org",
+      "lensa.com",
+      "jobgether.com"
     ],
-    "requirement_tiers": [
-      {
-        "score": 5,
-        "keywords": []
-      },
-      {
-        "score": 4,
-        "keywords": []
-      },
-      {
-        "score": 3,
-        "keywords": []
-      },
-      {
-        "default": 1
-      }
-    ]
-  },
-  "role_categories": {
-    "categories": []
-  },
-  "rejection_filters": {
-    "max_experience_years": 10,
-    "max_travel_pct": 25,
-    "blocked_industries": [],
-    "domain_experience_industries": [],
-    "description_blockers": []
-  },
-  "jobright_searches": {
-    "passes": [
-      {
-        "id": "remote_us",
-        "label": "Remote",
-        "taxonomy": "",
-        "work_model": "remote"
-      },
-      {
-        "id": "local_irl",
-        "label": "Local",
-        "taxonomy": "",
-        "work_model": "local"
-      }
+    "staffing_links": [
+      "jobdiva.com",
+      "bullhorn",
+      "ceipal.com",
+      "zohorecruit",
+      "jobadder.com",
+      "avionte.com",
+      "tempworks",
+      "crelate.com",
+      "loxo.co",
+      "recruitcrm.io",
+      "manatal.com"
     ]
   }
 }

@@ -2,7 +2,7 @@
 
 /**
  * src/scraper/ats-http.js
- * Port of ats_scraper_http.py — target company ATS scraper using plain fetch().
+ * Target-company ATS scraper (Greenhouse, Lever, Ashby, Workday) over plain fetch().
  * Supports Greenhouse, Lever, Ashby, and Workday.
  * Output format is identical to jobright.js so eval.js merges them cleanly.
  */
@@ -10,6 +10,7 @@
 const { app } = require('electron');
 const fs   = require('fs');
 const path = require('path');
+const { criteriaFromConfig } = require('../criteria');
 
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
@@ -37,13 +38,19 @@ async function fetchRetry(url, opts = {}, retries = 3, abortSignal = null) {
         ...opts,
         signal,
       });
-      if (retryOn.has(r.status) && i < retries) {
-        await sleep(backoffs[i] || 2000);
-        continue;
+      if (retryOn.has(r.status)) {
+        if (i < retries) {
+          await sleep(backoffs[i] || 2000);
+          continue;
+        }
+        // Retries exhausted on a 5xx/429: throw rather than hand back an error
+        // response, so callers treat it as a failed fetch instead of parsing the
+        // gateway-error body as job content.
+        throw new Error(`HTTP ${r.status} after ${retries} retries: ${url}`);
       }
       return r;
     } catch (err) {
-      // Don't retry if the user explicitly cancelled
+      // Don't retry if the user explicitly canceled
       if (abortSignal?.aborted || i === retries) throw err;
       await sleep(backoffs[i] || 2000);
     }
@@ -53,7 +60,7 @@ async function fetchRetry(url, opts = {}, retries = 3, abortSignal = null) {
 // ── HTML stripping ────────────────────────────────────────────────────────────
 
 function unescapeHtml(s) {
-  // Two passes to handle double-encoded content (matches Python html.unescape x2)
+  // Two passes: some boards emit double-encoded entities (&amp;lt; for <).
   const pass = (t) => t
     .replace(/&nbsp;/g,   ' ')
     .replace(/&amp;/g,    '&')
@@ -79,10 +86,10 @@ function stripHtml(h) {
 
 // ── Salary extraction ─────────────────────────────────────────────────────────
 
-// SAL_RE: no /g flag — only ever used with .exec() (single match per call).
+// SAL_RE: no /g flag: only ever used with .exec() (single match per call).
 // A global flag on a module-level regex makes .exec() stateful across calls.
 const SAL_RE   = /\$[\d,]+(?:\.\d+)?[KkMm]?(?:\s*[-–—]\s*\$[\d,]+(?:\.\d+)?[KkMm]?)?(?:\s*\/\s*(?:yr|year|hour|hr))?/i;
-// DOLLAR_RE: /gi required — used with String.matchAll() which needs the global flag.
+// DOLLAR_RE: /gi required: used with String.matchAll() which needs the global flag.
 const DOLLAR_RE = /\$[\d,]+(?:\.\d+)?[KkMm]?/gi;
 
 function parseDollar(token) {
@@ -186,13 +193,16 @@ function normalizeWorkType(loc, extra = '') {
   return 'Onsite';
 }
 
+// Tag each ATS role by work type only: 'ats_remote' or 'ats_local'. These are
+// not Jobright pass ids; they only mark where the role came from.
+// Whether a local role is actually within reach is decided later by the
+// scoring engine, which checks it against each track's own target location
+// and commute radius.
 function searchPass(loc, workType) {
   const wt = workType.toLowerCase();
-  if (wt.includes('remote') && !wt.includes('hybrid')) return 'remote_us';
-  const ll = (loc || '').toLowerCase();
-  const isCA = ll.includes('california') || ll.includes(', ca') || ll.endsWith(', ca') || ll.includes(' ca ');
-  if ((wt.includes('hybrid') || wt.includes('onsite') || wt.includes('on-site')) && isCA) return 'local_irl';
-  return 'remote_us';
+  if (wt.includes('remote') && !wt.includes('hybrid')) return 'ats_remote';
+  if (wt.includes('hybrid') || wt.includes('onsite') || wt.includes('on-site')) return 'ats_local';
+  return 'ats_remote';
 }
 
 // ── Description section splitter ──────────────────────────────────────────────
@@ -220,15 +230,14 @@ function splitDescription(text) {
 
 // ── Title filter ──────────────────────────────────────────────────────────────
 
-function buildTitleFilter(require_, block) {
-  const reqRe = require_.length
-    ? new RegExp('\\b(' + require_.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')\\b', 'i')
-    : null;
+// A posting is kept when its title names one of the roles the user is looking
+// for (matched exactly as the scoring does) and no blocked title word.
+function buildTitleFilter(roles, block) {
   const blkRe = block.length
     ? new RegExp('\\b(' + block.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')\\b', 'i')
     : null;
   return (title) => {
-    if (reqRe && !reqRe.test(title)) return false;
+    if (roles.length && !roles.some(r => r.re.test(title))) return false;
     if (blkRe &&  blkRe.test(title)) return false;
     return true;
   };
@@ -296,16 +305,27 @@ async function ghSalaryFromDetail(slug, jobId, prefetched) {
   return amountsToSalary(amounts);
 }
 
+// ── Board failure registry ────────────────────────────────────────────────────
+// A board that errors returns [] so one bad company cannot abort the run. That
+// makes a failure look exactly like "this company has no matching roles" in the
+// progress feed, which is how a rotted slug or a blocked endpoint goes unnoticed
+// for weeks. Every early return records why here, and run() reports the list.
+const boardFailures = [];
+function noteFailure(source, company, reason) {
+  boardFailures.push({ source, company, reason });
+  console.log(`  [${source}] ${company}: ${reason}`);
+}
+
 async function scrapeGreenhouse(company, board, titleMatches, signal = null) {
   let resp;
   try {
     resp = await fetchRetry(`${GH_API}/${board}/jobs?content=true`, {}, 3, signal);
   } catch (err) {
-    console.log(`  [GH] ${company} (${board}): network error - ${err.message}`);
+    noteFailure('GH', `${company} (${board})`, `network error - ${err.message}`);
     return [];
   }
-  if (resp.status === 404) { console.log(`  [GH] ${company} (${board}): 404`); return []; }
-  if (resp.status !== 200) { console.log(`  [GH] ${company} (${board}): HTTP ${resp.status}`); return []; }
+  if (resp.status === 404) { noteFailure('GH', `${company} (${board})`, 'HTTP 404 - board slug may be wrong'); return []; }
+  if (resp.status !== 200) { noteFailure('GH', `${company} (${board})`, `HTTP ${resp.status}`); return []; }
 
   const jobs = (await resp.json()).jobs || [];
   const matches = [];
@@ -371,11 +391,11 @@ async function scrapeLever(company, slug, titleMatches, signal = null) {
   try {
     resp = await fetchRetry(`https://api.lever.co/v0/postings/${slug}?mode=json&limit=500`, {}, 3, signal);
   } catch (err) {
-    console.log(`  [LV] ${company} (${slug}): network error - ${err.message}`);
+    noteFailure('LV', `${company} (${slug})`, `network error - ${err.message}`);
     return [];
   }
-  if ([404, 403].includes(resp.status)) { console.log(`  [LV] ${company} (${slug}): ${resp.status}`); return []; }
-  if (resp.status !== 200) { console.log(`  [LV] ${company} (${slug}): HTTP ${resp.status}`); return []; }
+  if ([404, 403].includes(resp.status)) { noteFailure('LV', `${company} (${slug})`, `HTTP ${resp.status} - board slug may be wrong`); return []; }
+  if (resp.status !== 200) { noteFailure('LV', `${company} (${slug})`, `HTTP ${resp.status}`); return []; }
 
   const data = await resp.json();
   const jobs = Array.isArray(data) ? data : (data.data || []);
@@ -408,6 +428,7 @@ async function scrapeLever(company, slug, titleMatches, signal = null) {
 
     matches.push({
       jid:              `ats_lv_${job.id || ''}`,
+      employment_type:  cats.commitment || '',
       url:              jobUrl,
       match_pct:        100,
       card_text:        `Direct ATS - ${company}`,
@@ -519,7 +540,10 @@ async function scrapeAshby(company, slug, titleMatches, signal = null) {
     if (usedFallback) {
       console.log(`  [AS] ${company} (${slug}): GraphQL 0; HTML fallback found ${postings.length}`);
     } else {
-      console.log(`  [AS] ${company} (${slug}): 0 postings via GraphQL and HTML fallback`);
+      // Both the API and the HTML fallback came back empty. Ashby boards that
+      // genuinely have no openings also land here, so this is reported as a
+      // board to check rather than a hard error.
+      noteFailure('AS', `${company} (${slug})`, '0 postings via GraphQL and HTML fallback');
     }
   }
 
@@ -565,6 +589,7 @@ async function scrapeAshby(company, slug, titleMatches, signal = null) {
 
     matches.push({
       jid:              `ats_as_${jobId}`,
+      employment_type:  posting.employmentType || '',
       url:              jobUrl,
       match_pct:        100,
       card_text:        `Direct ATS - ${company}`,
@@ -720,18 +745,18 @@ async function scrapeWorkday(company, baseUrl, tenant, site, searchTerms, titleM
           body:    JSON.stringify({ appliedFacets: {}, limit: 20, offset, searchText: keyword }),
         }, 3, signal);
       } catch (err) {
-        console.log(`  [WD] ${company}: network error - ${err.message}`);
+        noteFailure('WD', company, `network error - ${err.message}`);
         break;
       }
       if ([403, 404, 422].includes(r.status)) {
-        console.log(`  [WD] ${company} (${tenant}/${site}): HTTP ${r.status} - site slug may be wrong`);
+        noteFailure('WD', `${company} (${tenant}/${site})`, `HTTP ${r.status} - site slug may be wrong`);
         return [];
       }
-      if (r.status !== 200) { console.log(`  [WD] ${company}: HTTP ${r.status}`); break; }
+      if (r.status !== 200) { noteFailure('WD', company, `HTTP ${r.status}`); break; }
 
       let data;
       try { data = await r.json(); }
-      catch (err) { console.log(`  [WD] ${company}: JSON parse error - ${err.message}`); break; }
+      catch (err) { noteFailure('WD', company, `JSON parse error - ${err.message}`); break; }
 
       const batch = data.jobPostings || [];
       const total = data.total || 0;
@@ -837,7 +862,7 @@ async function discoverWorkdayUrl(company, hintUrl, signal = null) {
     if (!sm) console.log(`  [WD-discover] ${company}: site slug not found, defaulting to '${tenant}'`);
     return { base_url: baseUrl, tenant, site };
   } catch (err) {
-    console.log(`  [WD-discover] ${company}: fetch error - ${err.message}`);
+    noteFailure('WD-discover', company, `fetch error - ${err.message}`);
     return null;
   }
 }
@@ -865,6 +890,7 @@ function saveWdCache(cache) {
  */
 async function run({ cfg, signal, onProgress }) {
   const emit = (msg, pct) => { if (onProgress) onProgress(msg, pct); };
+  boardFailures.length = 0;
 
   const atsBoards     = cfg.ats_boards || {};
   const titleFilters  = cfg.title_filters || {};
@@ -873,9 +899,14 @@ async function run({ cfg, signal, onProgress }) {
   const ASHBY         = atsBoards.ashby          || {};
   const WD_DIRECT     = atsBoards.workday_direct || {};
   const WD_COMPANIES  = atsBoards.workday_companies || {};
-  const WD_TERMS      = atsBoards.workday_search_terms || [];
+  const crit          = criteriaFromConfig(cfg);
+  // Workday boards are searched by keyword. With no terms set, they are
+  // searched for the Ideal and Good roles (or every role, if none are).
+  const topRoles      = crit.roles.filter(r => r.priority !== 'acceptable').map(r => r.title);
+  const WD_TERMS      = (atsBoards.workday_search_terms || []).length ? atsBoards.workday_search_terms
+                      : topRoles.length ? topRoles : crit.roles.map(r => r.title);
   const titleMatches  = buildTitleFilter(
-    titleFilters.title_require || [],
+    crit.roles,
     titleFilters.title_block   || [],
   );
 
@@ -959,6 +990,15 @@ async function run({ cfg, signal, onProgress }) {
   }
 
   console.log(`\n  ATS done - ${deduped.length} unique roles from ${Object.keys(GREENHOUSE).length + Object.keys(LEVER).length + Object.keys(ASHBY).length + wdResolved.length} companies`);
+
+  // Surface unreachable boards in the run feed. Without this a dead board slug
+  // is silently worth zero roles and reads as a quiet market.
+  if (boardFailures.length) {
+    const detail = boardFailures.map(f => `${f.company}: ${f.reason}`).join(' | ');
+    console.error(`  ATS: ${boardFailures.length} board(s) returned nothing usable - ${detail}`);
+    emit(`\u26a0 ${boardFailures.length} ATS board(s) returned nothing usable - ${detail}`, 1);
+  }
+
   return deduped;
 }
 

@@ -10,6 +10,14 @@ files:
   - assets/**
   - resources/**
   - package.json
+  # Editing over a network/FUSE mount leaves orphaned .fuse_hidden* files beside
+  # their originals. They are gitignored but still on disk, and src/** would
+  # otherwise bundle stale copies of eval.js and ats-http.js into the installer.
+  - "!**/.fuse_hidden*"
+  # Never ship editor, OS or VCS debris picked up by the broad globs above.
+  - "!**/*.map"
+  - "!**/.DS_Store"
+  - "!**/Thumbs.db"
 
 win:
   target:

@@ -3,7 +3,9 @@
 /**
  * ui/preload.js
  * Runs in the renderer context with Node integration disabled.
- * Exposes window.electronAPI via contextBridge — the full surface from HANDOFF §10.
+ * Exposes window.electronAPI via contextBridge. This is the ONLY channel between
+ * the renderer and the main process; every entry here has a matching
+ * ipcMain handler in src/main.js.
  */
 
 const { contextBridge, ipcRenderer } = require('electron');
@@ -13,6 +15,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // ── Config ──────────────────────────────────────────────────────────────────
   loadConfig: () => ipcRenderer.invoke('config:load'),
   saveConfig: (config) => ipcRenderer.invoke('config:save', config),
+  getScoringRules: () => ipcRenderer.invoke('config:rules'),
 
   // ── Scrape lifecycle ────────────────────────────────────────────────────────
   startScrape:  (options) => ipcRenderer.invoke('scrape:start', options),
@@ -34,10 +37,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('scrape:error', handler);
     return () => ipcRenderer.removeListener('scrape:error', handler);
   },
-  onScrapeCancelled: (cb) => {
+  onScrapeCanceled: (cb) => {
     const handler = (_event, data) => cb(data);
-    ipcRenderer.on('scrape:cancelled', handler);
-    return () => ipcRenderer.removeListener('scrape:cancelled', handler);
+    ipcRenderer.on('scrape:canceled', handler);
+    return () => ipcRenderer.removeListener('scrape:canceled', handler);
   },
 
   // ── Results ─────────────────────────────────────────────────────────────────
@@ -66,15 +69,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSchedule: ()         => ipcRenderer.invoke('scheduler:get'),
   setSchedule: (schedule) => ipcRenderer.invoke('scheduler:set', schedule),
 
-  // ── Window navigation ─────────────────────────────────────────────────────
-  openConfigWindow: () => ipcRenderer.invoke('config:openWindow'),
-  openDashboard:    () => ipcRenderer.invoke('dashboard:open'),
-
   // ── Run period (persisted) ──────────────────────────────────────────────────
   getRunPeriod: ()      => ipcRenderer.invoke('run:getPeriod'),
   setRunPeriod: (days)  => ipcRenderer.invoke('run:setPeriod', days),
-
-  // ── App ─────────────────────────────────────────────────────────────────────
-  getVersion:      () => ipcRenderer.sendSync('app:getVersion'),
-  checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
 });

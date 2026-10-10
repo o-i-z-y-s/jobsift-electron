@@ -8,13 +8,13 @@
 
 const {
   app, BrowserWindow, Tray, Menu, nativeImage,
-  ipcMain, net, session, Notification, shell,
+  ipcMain, session, Notification, shell,
 } = require('electron');
-const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs   = require('fs');
 
 const cfgModule  = require('./config');
+const { RULES }  = require('./criteria');
 const scheduler  = require('./scheduler');
 
 // Force the app name so the userData directory is ALWAYS %APPDATA%/JobSift,
@@ -51,9 +51,8 @@ app.commandLine.appendSwitch('disk-cache-size', '0');
 function evaluatedDir() {
   return path.join(app.getPath('userData'), 'Scrapes', 'Evaluated Scrapes');
 }
-// Single intermediate folder for both the raw per-source dumps and the transient
-// merged file (the merge file is deleted on a successful run). Consolidated from
-// the former separate "Raw" and "Raw Scrape Staging" folders.
+// Intermediate folder for the raw per-source dumps and the transient merged
+// file (the merge file is deleted on a successful run).
 function stagingDir() {
   return path.join(app.getPath('userData'), 'Scrapes', 'Raw Scrape Staging');
 }
@@ -84,30 +83,30 @@ function atsUrlKey(url) {
   let u;
   try { u = new URL(url); } catch { return ''; }
   const host = u.host.toLowerCase();
-  const path = u.pathname || '';
+  const urlPath = u.pathname || '';   // NOT `path`: that would shadow the path module
   const UUID = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
   let m;
   if (host.includes('greenhouse.io')) {            // boards.greenhouse.io/{board}/jobs/{numericId}
-    m = path.match(/\/jobs\/(\d+)/);
+    m = urlPath.match(/\/jobs\/(\d+)/);
     if (m) return `gh:${m[1]}`;
   }
   if (host.includes('lever.co')) {                 // jobs.lever.co/{slug}/{uuid}
-    m = path.match(UUID);
+    m = urlPath.match(UUID);
     if (m) return `lv:${m[1].toLowerCase()}`;
   }
   if (host.includes('ashbyhq.com')) {              // jobs.ashbyhq.com/{slug}/{uuid}
-    m = path.match(UUID);
+    m = urlPath.match(UUID);
     if (m) return `as:${m[1].toLowerCase()}`;
   }
   if (host.includes('myworkdayjobs.com')) {        // .../...{title}_{reqId}  (one per state)
-    m = path.match(/_([A-Za-z]{1,5}-?\d{4,})(?:[-_]\d{1,3})?$/)
-     || path.match(/([A-Za-z]{1,5}-?\d{4,})(?:[-_]\d{1,3})?(?:[/?#]|$)/);
+    m = urlPath.match(/_([A-Za-z]{1,5}-?\d{4,})(?:[-_]\d{1,3})?$/)
+     || urlPath.match(/([A-Za-z]{1,5}-?\d{4,})(?:[-_]\d{1,3})?(?:[/?#]|$)/);
     if (m) return `wd:${host}:${m[1].toUpperCase()}`;
   }
   // Career-network sites (e.g. "{company}.jobs") that list the same role once per
   // location as /{location}/{title-slug}/{32-hex-id}/job/. The location and hex id
   // differ per posting, so key on host + the stable title slug.
-  m = path.match(/\/([^/]+)\/[0-9a-f]{32}\/job\/?$/i);
+  m = urlPath.match(/\/([^/]+)\/[0-9a-f]{32}\/job\/?$/i);
   if (m) return `slug:${host}:${m[1].toLowerCase()}`;
   return '';
 }
@@ -245,10 +244,8 @@ function getLogin() {
       _loginPoll = setInterval(async () => {
         if (!loginWin || loginWin.isDestroyed()) { stopLoginPoll(); return; }
         const cs = await liveJobrightCookies();
-        const newSession = cs.some(c =>
-          !_baseline.has(c.name) &&
-          !ANALYTICS_COOKIE_RE.test(c.name) &&
-          (c.httpOnly === true || AUTH_COOKIE_RE.test(c.name)));
+        // New (not baselined) + passes the shared session-cookie test.
+        const newSession = cs.some(c => !_baseline.has(c.name) && isSessionCookie(c));
         if (newSession) {
           stopLoginPoll();
           if (loginWin && !loginWin.isDestroyed()) loginWin.hide();
@@ -305,7 +302,7 @@ function refreshTrayMenu() {
   if (tray && !tray.isDestroyed()) {
     tray.setContextMenu(buildTrayMenu());
     // Hovering the tray icon reflects whether a scrape (manual or scheduled) is running.
-    tray.setToolTip(scrapeAbort ? 'JobSift — scraping in progress…' : 'JobSift');
+    tray.setToolTip(scrapeAbort ? 'JobSift: scraping in progress…' : 'JobSift');
   }
 }
 
@@ -320,26 +317,27 @@ const AUTH_COOKIE_RE = /^session[_-]?id$/i;
 // NOT be treated as a session.
 const ANALYTICS_COOKIE_RE = /^(_ga|_gid|_gat|_gcl|_fbp|_fbc|_hj|ajs_|amplitude|mp_|_mkto|__stripe|_clck|_clsk|_uetsid|_uetvid|optimizely|hubspot|__hs|intercom)/i;
 
+// One definition of "this cookie means a live Jobright session", shared by the
+// post-login poller and the pre-run check. They must agree: if the poller
+// accepted a cookie the pre-run check rejects, the login window would close and
+// the dashboard open while the app still counted as signed out, and the next
+// run would immediately re-prompt for sign-in.
+function isSessionCookie(c) {
+  const live = !c.expirationDate || c.expirationDate > Date.now() / 1000;
+  return live && !ANALYTICS_COOKIE_RE.test(c.name) && AUTH_COOKIE_RE.test(c.name);
+}
+
 async function checkLoggedIn() {
   // Check for persisted Jobright session cookies in the default session.
   // Reliable across restarts (Electron stores cookies on disk in userData) and
   // avoids the SPA redirect problem that makes net.fetch unreliable.
   //
-  // We treat the user as signed in only if there is a non-expired cookie whose
-  // NAME looks like a session/auth token, ignoring known analytics cookies.
-  // We intentionally do NOT count "httpOnly" as a signal here: jobright.ai sets
-  // httpOnly cookies on the anonymous page before sign-in, so that would produce
-  // a false positive that hides the login window and the Sign In button.
+  // Signed in only if a non-expired cookie's NAME is the session token.
+  // httpOnly is deliberately not a signal: jobright.ai sets httpOnly cookies on
+  // the anonymous page before sign-in, so it would fire immediately and wrongly.
   try {
     const cookies = await session.defaultSession.cookies.get({ domain: 'jobright.ai' });
-    const now = Date.now() / 1000;
-    return cookies.some(c => {
-      const live = !c.expirationDate || c.expirationDate > now;
-      if (!live) return false;
-      // AUTH_COOKIE_RE is the exact "session_id" name, which no analytics cookie
-      // matches, so no separate analytics filter is needed here.
-      return AUTH_COOKIE_RE.test(c.name);
-    });
+    return cookies.some(isSessionCookie);
   } catch {
     return false;
   }
@@ -375,8 +373,9 @@ async function runPipeline(options) {
   const { daysAgo = 7, includeSeen = false, background = false } = options || {};
   const ts = timestamp();
 
-  // Lazy requires - scrapers/eval are written later; prevents startup failure
-  // if those files don't exist yet during development.
+  // Required here rather than at module load: these three pull in the scraping
+  // and scoring stacks, and a run is the only thing that needs them. Keeping
+  // them out of the startup path means launching to the tray stays fast.
   const jobrightScraper = require('./scraper/jobright');
   const atsScraper      = require('./scraper/ats-http');
   const evalEngine      = require('./eval');
@@ -582,10 +581,10 @@ async function triggerScrape(options) {
     const result = await runPipeline(options);
     // The pipeline always saves an artifact now, even on cancel (it processes
     // whatever was collected). So if we have a result, surface it; only fall back
-    // to the plain cancelled view if no artifact was produced.
+    // to the plain canceled view if no artifact was produced.
     if (result) {
       const aborted = scrapeAbort && scrapeAbort.signal.aborted;
-      broadcast('scrape:complete', { ...result, cancelled: !!aborted });
+      broadcast('scrape:complete', { ...result, canceled: !!aborted });
       if (background && !aborted) {
         const c = result.counts || {};
         notify('JobSift scrape complete',
@@ -593,13 +592,13 @@ async function triggerScrape(options) {
           () => showDashboard());
       }
     } else if (scrapeAbort && scrapeAbort.signal.aborted) {
-      broadcast('scrape:cancelled', {});
+      broadcast('scrape:canceled', {});
     }
   } catch (err) {
     // Not-signed-in is surfaced as a friendly prompt via 'auth:required', not a
     // hard scrape failure, so we suppress the generic error in that case.
     if (scrapeAbort && scrapeAbort.signal.aborted) {
-      broadcast('scrape:cancelled', {});
+      broadcast('scrape:canceled', {});
     } else if (err.message !== '__AUTH_REQUIRED__') {
       broadcast('scrape:error', { message: err.message });
       if (background) {
@@ -614,14 +613,28 @@ async function triggerScrape(options) {
 
 // ── IPC registration ──────────────────────────────────────────────────────────
 
+// Every renderer-supplied results path goes through this one gate, so load and
+// delete cannot drift apart. Only .json files inside evaluatedDir() pass; the
+// directory itself is refused rather than left to fail inside readFileSync.
+function resolveResultPath(fpath) {
+  const resolved = path.resolve(String(fpath || ''));
+  const evalRoot = path.resolve(evaluatedDir());
+  if (!resolved.startsWith(evalRoot + path.sep) || !resolved.toLowerCase().endsWith('.json')) {
+    throw new Error('Access denied: path outside results directory');
+  }
+  return resolved;
+}
+
 function registerIpc() {
   // Config
   ipcMain.handle('config:load', () => cfgModule.load());
   ipcMain.handle('config:save', (_e, data) => cfgModule.save(data));
+  // Read-only: the scoring rules the engine applies, shown on the config page.
+  ipcMain.handle('config:rules', () => RULES);
 
   // Scrape lifecycle
   // Fire-and-forget: triggerScrape is long-running (full pipeline).
-  // The renderer does NOT await the resolved value — progress arrives via events.
+  // The renderer does NOT await the resolved value; progress arrives via events.
   // Awaiting here would hang the renderer's invoke call for the full pipeline duration.
   ipcMain.handle('scrape:start',  (_e, options) => { triggerScrape(options); });
   ipcMain.handle('scrape:cancel', () => { if (scrapeAbort) scrapeAbort.abort(); });
@@ -650,24 +663,11 @@ function registerIpc() {
   });
 
   ipcMain.handle('results:load', (_e, fpath) => {
-    // Validate that the requested path is inside evaluatedDir() — no traversal
-    const resolved  = path.resolve(fpath);
-    const evalRoot  = path.resolve(evaluatedDir());
-    if (!resolved.startsWith(evalRoot + path.sep) && resolved !== evalRoot) {
-      throw new Error('Access denied: path outside results directory');
-    }
-    return JSON.parse(fs.readFileSync(resolved, 'utf8'));
+    return JSON.parse(fs.readFileSync(resolveResultPath(fpath), 'utf8'));
   });
 
   ipcMain.handle('results:delete', (_e, fpath) => {
-    // Same path-safety check as load: only files inside the results directory,
-    // and only .json scrape outputs, may be deleted.
-    const resolved = path.resolve(fpath);
-    const evalRoot = path.resolve(evaluatedDir());
-    if (!resolved.startsWith(evalRoot + path.sep) || !resolved.toLowerCase().endsWith('.json')) {
-      throw new Error('Access denied: path outside results directory');
-    }
-    fs.unlinkSync(resolved);
+    fs.unlinkSync(resolveResultPath(fpath));
     return true;
   });
 
@@ -687,10 +687,6 @@ function registerIpc() {
     setupScheduler(schedule);
   });
 
-  // Window navigation
-  ipcMain.handle('config:openWindow', () => { showConfig(); });
-  ipcMain.handle('dashboard:open',    () => { showDashboard(); });
-
   // Run period (persisted scan window in days)
   ipcMain.handle('run:getPeriod', () => lastDaysAgo);
   ipcMain.handle('run:setPeriod', (_e, days) => {
@@ -699,10 +695,6 @@ function registerIpc() {
       try { const c = cfgModule.load(); c._lastDaysAgo = days; cfgModule.save(c); } catch { /* ignore */ }
     }
   });
-
-  // App
-  ipcMain.on('app:getVersion', (e) => { e.returnValue = app.getVersion(); });
-  ipcMain.handle('app:checkForUpdates', () => autoUpdater.checkForUpdatesAndNotify());
 }
 
 // ── Scheduler (delegates to src/scheduler.js) ─────────────────────────────────
@@ -716,9 +708,28 @@ function setupScheduler(schedule) {
 // runPipeline's try, or a rejected promise with no handler, lands here.
 process.on('uncaughtException', (err) => {
   console.error('Uncaught exception:', err);
-  try { broadcast('scrape:error', { message: 'Unexpected error: ' + (err?.message || err) }); } catch { /* ignore */ }
+  const message = 'Unexpected error: ' + (err?.message || err);
+
+  // A throw raised outside runPipeline's await chain (a timer callback, an event
+  // listener) never settles triggerScrape's promise, so its finally block never
+  // runs and scrapeAbort stays set. triggerScrape refuses to start while that is
+  // true, so every later run is locked out until the app is restarted, and the
+  // tray stays stuck on "Running...". Releasing it here trades a rare double-run
+  // (only if the pipeline somehow survived) for a recoverable app.
+  const wasRunning = !!scrapeAbort;
+  if (wasRunning) {
+    scrapeAbort = null;
+    refreshTrayMenu();
+  }
+
+  try { broadcast('scrape:error', { message }); } catch { /* ignore */ }
+  // A background run has no visible window, so the broadcast alone is invisible.
+  if (wasRunning) notify('JobSift run stopped', message, () => showDashboard());
 });
 process.on('unhandledRejection', (reason) => {
+  // Logged but deliberately not treated as a failed run: a rejection can come
+  // from anywhere, and tearing down a healthy pipeline on one would be worse
+  // than the missed report.
   console.error('Unhandled promise rejection:', reason);
 });
 
@@ -762,7 +773,7 @@ app.whenReady().then(async () => {
 
   // Decide the landing window. If the user has not completed setup yet
   // (fresh config.json copied from the empty template, or setup_complete is
-  // not true), present the Settings window — its UI auto-shows the setup
+  // not true), present the Settings window; its UI auto-shows the setup
   // wizard whenever setup_complete !== true. Otherwise land on the dashboard.
   let configured = false;
   try { configured = cfgModule.load().setup_complete === true; } catch { configured = false; }

@@ -4,36 +4,31 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>JobSift Dashboard</title>
+<!--
+  Deliberately narrow. Both pages use inline event handlers, so script-src
+  cannot be locked down without refactoring those first, and no script-src or
+  style-src directive is set here: with no default-src, an unlisted directive is
+  simply not enforced, so nothing below can break rendering.
+
+  What it does buy: these pages never call fetch/XHR/WebSocket, never embed a
+  frame or object, and have no forms. Denying all of those means markup injected
+  through scraped job data cannot phone home, pull a second stage, or post
+  anywhere, even though it could still run. Tighten to
+  "default-src 'none'; script-src 'self'" once the inline handlers move into
+  ui/shared/.
+-->
+<meta http-equiv="Content-Security-Policy"
+      content="connect-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; base-uri 'none'; form-action 'none'">
+<link rel="stylesheet" href="../shared/tokens.css">
+<script src="../shared/dom.js"></script>
 <style>
-  :root {
-    --bg: #0f1117;
-    --surface: #1a1d27;
-    --surface2: #22263a;
-    --border: #2e3250;
-    --accent: #5b7fff;
-    --accent2: #7c5cfc;
-    --text: #e8eaf6;
-    --muted: #8892b0;
-    --grade-a: #22d47a;
-    --grade-b: #e8a0ff;
-    --grade-c: #f5a623;
-    --grade-d: #e05252;
-    --fresh: #22d47a;
-    --ripe: #5b7fff;
-    --open: #8892b0;
-    --stale: #f5a623;
-    --ghost: #e05252;
-    --flag: #f5a623;
-    --tier1: #f5a623;
-    --tier2: #8892b0;
-  }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
   body {
     background: var(--bg);
     color: var(--text);
-    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    font-family: var(--font);
     font-size: 14px;
     line-height: 1.5;
     min-height: 100vh;
@@ -70,22 +65,6 @@
   #dropzone h1 { font-size: 20px; font-weight: 700; }
   #dropzone p  { color: var(--muted); font-size: 13px; text-align: center; }
 
-  #drop-target {
-    border: 2px dashed var(--border);
-    border-radius: 12px;
-    padding: 48px 64px;
-    text-align: center;
-    cursor: pointer;
-    transition: border-color 0.2s, background 0.2s;
-    color: var(--muted);
-    font-size: 13px;
-  }
-  #drop-target:hover, #drop-target.drag-over {
-    border-color: var(--accent);
-    background: rgba(91,127,255,0.06);
-    color: var(--text);
-  }
-  #drop-target .drop-icon { font-size: 36px; display: block; margin-bottom: 12px; }
   #file-input { display: none; }
 
   .browse-btn {
@@ -100,13 +79,13 @@
     cursor: pointer;
     font-family: inherit;
   }
-  .browse-btn:hover { background: #4a6ee0; }
+  .browse-btn:hover { background: var(--accent-hover); }
 
   #error-msg {
     display: none;
     color: var(--grade-d);
-    background: rgba(224,82,82,0.1);
-    border: 1px solid rgba(224,82,82,0.3);
+    background: color-mix(in srgb, var(--grade-d) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--grade-d) 30%, transparent);
     border-radius: 6px;
     padding: 10px 16px;
     font-size: 13px;
@@ -118,7 +97,7 @@
   #dashboard { display: none; }
 
   header {
-    background: linear-gradient(135deg, #1a1d27 0%, #22263a 100%);
+    background: linear-gradient(135deg, var(--surface) 0%, var(--surface2) 100%);
     border-bottom: 1px solid var(--border);
     padding: 24px 32px 20px;
     display: flex;
@@ -151,22 +130,6 @@
   }
   .reload-btn:hover { border-color: var(--accent); color: var(--accent); }
 
-  .search-url {
-    margin: 16px 32px 0;
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 10px 14px;
-    font-size: 12px;
-    color: var(--muted);
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-  }
-  .search-url a { color: var(--accent); text-decoration: none; word-break: break-all; }
-  .search-url a:hover { text-decoration: underline; }
-  .search-url strong { color: var(--text); white-space: nowrap; }
 
   .stats-bar {
     display: flex;
@@ -224,9 +187,6 @@
   .filter-group input[type=checkbox],
   .filter-group input[type=radio] { accent-color: var(--accent); cursor: pointer; }
 
-  .track-pill-REM { color: #7de8b8; }
-  .track-pill-IRL { color: #f5c46a; }
-  .track-pill-ADD { color: #8fa8ff; }
 
   /* ── Section ────────────────────────────────────── */
   .section { padding: 20px 32px 32px; }
@@ -338,14 +298,16 @@
     cursor: pointer;
     transition: background 0.15s;
   }
-  tbody tr.job-row:hover    { background: rgba(91,127,255,0.06); }
-  tbody tr.job-row.expanded { background: rgba(91,127,255,0.08); }
+  tbody tr.job-row:hover    { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+  tbody tr.job-row.expanded { background: color-mix(in srgb, var(--accent) 8%, transparent); }
   tbody td { padding: 11px 12px; vertical-align: middle; }
   /* Centered columns (Grade, Apply) - header and cells */
   .table-scroll th.col-center, .table-scroll td.col-center { text-align: center; }
 
-  .company-name  { font-weight: 600; color: var(--text); white-space: nowrap; }
-  .role-title    { color: var(--accent); font-weight: 500; font-size: 13px; }
+  /* Company names wrap so a long one cannot widen its column and squeeze the
+     role title; the role keeps a minimum width so it always has room. */
+  .company-name  { font-weight: 600; color: var(--text); max-width: 220px; overflow-wrap: anywhere; }
+  .role-title    { color: var(--accent); font-weight: 500; font-size: 13px; min-width: 240px; }
   .location-text { color: var(--muted); font-size: 12px; }
 
   .badge {
@@ -358,21 +320,39 @@
     font-weight: 600;
     white-space: nowrap;
   }
-  .grade-A { background: rgba(34,212,122,0.15);  color: var(--grade-a); border: 1px solid rgba(34,212,122,0.3); }
-  .grade-B { background: rgba(232,160,255,0.12); color: var(--grade-b); border: 1px solid rgba(232,160,255,0.3); }
-  .grade-C { background: rgba(245,166,35,0.15);  color: var(--grade-c); border: 1px solid rgba(245,166,35,0.3); }
+  .grade-A { background: color-mix(in srgb, var(--grade-a) 15%, transparent);  color: var(--grade-a); border: 1px solid color-mix(in srgb, var(--grade-a) 30%, transparent); }
+  .grade-B { background: color-mix(in srgb, var(--grade-b) 12%, transparent); color: var(--grade-b); border: 1px solid color-mix(in srgb, var(--grade-b) 30%, transparent); }
+  .grade-C { background: color-mix(in srgb, var(--grade-c) 15%, transparent);  color: var(--grade-c); border: 1px solid color-mix(in srgb, var(--grade-c) 30%, transparent); }
 
   .cap-arrow { font-size: 9px; opacity: 0.75; }
 
   /* Track badges */
-  .track-REM { background: rgba(34,212,122,0.12); color: #7de8b8; border: 1px solid rgba(34,212,122,0.2); }
-  .track-IRL { background: rgba(245,166,35,0.12); color: #f5c46a; border: 1px solid rgba(245,166,35,0.2); }
-  .track-ADD { background: rgba(91,127,255,0.12); color: #8fa8ff; border: 1px solid rgba(91,127,255,0.2); }
+  /* Track badges take their color from --track-color, assigned per track in
+     render() in the order tracks are configured, so any track name works. */
+  .badge.track {
+    background: color-mix(in srgb, var(--track-color, var(--muted)) 14%, transparent);
+    color: var(--track-color, var(--muted));
+    border: 1px solid color-mix(in srgb, var(--track-color, var(--muted)) 25%, transparent);
+  }
+
+  /* Employment type and poster labels, shown only when they tell you something:
+     not for Full-time roles, and not when the employer posted it. */
+  .badge.tag { margin-left: 6px; font-weight: 500;
+    background: color-mix(in srgb, var(--muted) 12%, transparent); color: var(--muted);
+    border: 1px solid color-mix(in srgb, var(--muted) 25%, transparent); }
+  .badge.tag.target { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+  .badge.tag.board { color: var(--flag); background: color-mix(in srgb, var(--flag) 10%, transparent);
+    border-color: color-mix(in srgb, var(--flag) 30%, transparent); }
+  .source-block { font-size: 12px; color: var(--muted); margin-bottom: 8px; line-height: 1.5; }
+  .source-block strong { color: var(--text); font-weight: 600; }
+  .source-block ul { margin: 2px 0 0 16px; padding: 0; }
+  .source-block a { color: var(--accent); }
 
   /* Work type badges */
-  .type-remote   { background: rgba(34,212,122,0.08); color: #7de8b8; border: 1px solid rgba(34,212,122,0.2); font-weight: 500; }
-  .type-hybrid   { background: rgba(91,127,255,0.08); color: #8fa8ff; border: 1px solid rgba(91,127,255,0.2); font-weight: 500; }
-  .type-inperson { background: rgba(245,166,35,0.08); color: #f5c46a; border: 1px solid rgba(245,166,35,0.2); font-weight: 500; }
+  .type-remote   { background: color-mix(in srgb, var(--grade-a) 8%, transparent); color: var(--tint-green); border: 1px solid color-mix(in srgb, var(--grade-a) 20%, transparent); font-weight: 500; }
+  .type-hybrid   { background: color-mix(in srgb, var(--accent) 8%, transparent); color: var(--tint-blue); border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent); font-weight: 500; }
+  .type-inperson { background: color-mix(in srgb, var(--grade-c) 8%, transparent); color: var(--tint-amber); border: 1px solid color-mix(in srgb, var(--grade-c) 20%, transparent); font-weight: 500; }
 
   /* Posted age coloring */
   .posted-Fresh   { color: var(--fresh); }
@@ -413,14 +393,14 @@
     color: var(--accent);
     text-decoration: none;
     font-size: 12px;
-    border: 1px solid rgba(91,127,255,0.4);
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
     border-radius: 4px;
     padding: 3px 8px;
     display: inline-block;
     white-space: nowrap;
     transition: background 0.15s;
   }
-  .apply-link:hover { background: rgba(91,127,255,0.15); }
+  .apply-link:hover { background: color-mix(in srgb, var(--accent) 15%, transparent); }
 
   .expand-icon {
     color: var(--muted);
@@ -463,9 +443,11 @@
   .dim-table td:first-child  { color: var(--muted); width: 52%; }
   .dim-table td:nth-child(2) { font-weight: 700; text-align: center; width: 13%; }
   .dim-table td:last-child   { color: var(--muted); font-size: 11px; }
+  .dim-table.match-table td:first-child  { width: 22%; }
+  .dim-table.match-table td:nth-child(2) { width: 18%; white-space: nowrap; }
 
   .dim-5 { color: var(--grade-a); }
-  .dim-4 { color: #7ecbff; }
+  .dim-4 { color: var(--tint-sky); }
   .dim-3 { color: var(--text); }
   .dim-2 { color: var(--stale); }
   .dim-1 { color: var(--grade-d); }
@@ -510,8 +492,8 @@
   .ps-warn { color: var(--flag); }
 
   .addendum-note {
-    background: rgba(245,166,35,0.08);
-    border: 1px solid rgba(245,166,35,0.25);
+    background: color-mix(in srgb, var(--grade-c) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--grade-c) 25%, transparent);
     border-radius: 6px;
     padding: 8px 10px;
     font-size: 12px;
@@ -578,8 +560,8 @@
     gap: 6px;
   }
   .tier1-pill {
-    background: rgba(245,166,35,0.12);
-    border: 1px solid rgba(245,166,35,0.3);
+    background: color-mix(in srgb, var(--grade-c) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--grade-c) 30%, transparent);
     border-radius: 10px;
     padding: 2px 8px;
     font-size: 11px;
@@ -589,8 +571,8 @@
     letter-spacing: 0;
   }
   .tier2-pill {
-    background: rgba(136,146,176,0.1);
-    border: 1px solid rgba(136,146,176,0.2);
+    background: color-mix(in srgb, var(--muted) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--muted) 20%, transparent);
     border-radius: 10px;
     padding: 2px 8px;
     font-size: 11px;
@@ -617,6 +599,8 @@
     align-items: center;
   }
   .rej-filter-bar.visible { display: flex; }
+  /* Role type buttons in the rejected panel: one row, wrapping when needed. */
+  .rej-tab-buttons { display: flex; flex-wrap: wrap; gap: 2px; }
 
   /* Reason category badge */
   .reason-cat {
@@ -627,22 +611,25 @@
     font-weight: 600;
     white-space: nowrap;
   }
-  .rcat-salary_floor  { background: rgba(245,166,35,0.12); color: var(--grade-c); border: 1px solid rgba(245,166,35,0.25); }
-  .rcat-clearance     { background: rgba(224,82,82,0.12);  color: var(--grade-d); border: 1px solid rgba(224,82,82,0.25); }
-  .rcat-geo_restriction { background: rgba(91,127,255,0.12); color: #8fa8ff; border: 1px solid rgba(91,127,255,0.25); }
-  .rcat-travel        { background: rgba(91,127,255,0.12); color: #8fa8ff; border: 1px solid rgba(91,127,255,0.25); }
-  .rcat-domain_exclusion { background: rgba(136,146,176,0.1); color: var(--muted); border: 1px solid rgba(136,146,176,0.2); }
-  .rcat-title_level   { background: rgba(136,146,176,0.1); color: var(--muted); border: 1px solid rgba(136,146,176,0.2); }
-  .rcat-non_pm        { background: rgba(136,146,176,0.1); color: var(--muted); border: 1px solid rgba(136,146,176,0.2); }
-  .rcat-prescreen     { background: rgba(136,146,176,0.1); color: var(--muted); border: 1px solid rgba(136,146,176,0.2); }
-  .rcat-grade_d       { background: rgba(224,82,82,0.08);  color: var(--grade-d); border: 1px solid rgba(224,82,82,0.2); }
-  .rcat-other         { background: rgba(136,146,176,0.1); color: var(--muted); border: 1px solid rgba(136,146,176,0.2); }
+  .rcat-salary_missing { background: color-mix(in srgb, var(--muted) 10%, transparent); color: var(--muted); border: 1px solid color-mix(in srgb, var(--muted) 20%, transparent); }
+  .rcat-salary_floor  { background: color-mix(in srgb, var(--grade-c) 12%, transparent); color: var(--grade-c); border: 1px solid color-mix(in srgb, var(--grade-c) 25%, transparent); }
+  .rcat-clearance     { background: color-mix(in srgb, var(--grade-d) 12%, transparent);  color: var(--grade-d); border: 1px solid color-mix(in srgb, var(--grade-d) 25%, transparent); }
+  .rcat-geo_restriction { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--tint-blue); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); }
+  .rcat-travel        { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--tint-blue); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); }
+  .rcat-domain_exclusion { background: color-mix(in srgb, var(--muted) 10%, transparent); color: var(--muted); border: 1px solid color-mix(in srgb, var(--muted) 20%, transparent); }
+  .rcat-title_level   { background: color-mix(in srgb, var(--muted) 10%, transparent); color: var(--muted); border: 1px solid color-mix(in srgb, var(--muted) 20%, transparent); }
+  .rcat-blocked_title { background: color-mix(in srgb, var(--muted) 10%, transparent); color: var(--muted); border: 1px solid color-mix(in srgb, var(--muted) 20%, transparent); }
+  .rcat-prescreen     { background: color-mix(in srgb, var(--muted) 10%, transparent); color: var(--muted); border: 1px solid color-mix(in srgb, var(--muted) 20%, transparent); }
+  .rcat-grade_d       { background: color-mix(in srgb, var(--grade-d) 8%, transparent);  color: var(--grade-d); border: 1px solid color-mix(in srgb, var(--grade-d) 20%, transparent); }
+  .rcat-employment_type { background: color-mix(in srgb, var(--muted) 10%, transparent); color: var(--muted); border: 1px solid color-mix(in srgb, var(--muted) 20%, transparent); }
+  .rcat-repost        { background: color-mix(in srgb, var(--grade-d) 8%, transparent);  color: var(--grade-d); border: 1px solid color-mix(in srgb, var(--grade-d) 20%, transparent); }
+  .rcat-other         { background: color-mix(in srgb, var(--muted) 10%, transparent); color: var(--muted); border: 1px solid color-mix(in srgb, var(--muted) 20%, transparent); }
 
   /* Rejected detail cell */
   .rej-detail-cell {
     padding: 12px 16px 16px;
     background: var(--surface);
-    border-bottom: 2px solid rgba(136,146,176,0.3);
+    border-bottom: 2px solid color-mix(in srgb, var(--muted) 30%, transparent);
   }
   .rej-reason-full {
     font-size: 12px;
@@ -664,7 +651,6 @@
     .section       { padding: 0 16px 24px; }
     header         { padding: 16px; }
     .stats-bar     { padding: 12px 16px; }
-    .search-url    { margin: 12px 16px 0; }
     .filter-bar    { padding: 10px 16px; gap: 16px; }
   }
 </style>
@@ -764,9 +750,12 @@
       <!-- populated dynamically by render() from meta.track_labels -->
     </div>
     <div class="filter-group" id="type-filter-group">
-      <span>Type</span>
+      <span title="Set in Configuration, Tracks tab, under Role Types" style="cursor:help">Role Type</span>
       <!-- populated dynamically by render() from role_cat values in loaded data -->
     </div>
+    <!-- Built by render() from the values that came up in the loaded run. -->
+    <div class="filter-group" id="emp-filter-group"><span>Employment</span></div>
+    <div class="filter-group" id="by-filter-group"><span>Posted by</span></div>
     <button class="browse-btn" style="padding:4px 10px;font-size:11px;background:var(--surface2);color:var(--muted);border:1px solid var(--border);margin-left:auto"
             onclick="resetFilters()">Reset filters</button>
   </div>
@@ -776,21 +765,21 @@
 
     <!-- Remote section -->
     <div class="section-header">
-      🌐 Remote <span class="pill">Track REM · D6 = 5 · No cap</span>
+      🌐 Remote
       <span class="count" id="remote-count"></span>
     </div>
     <div id="remote-section"></div>
 
     <!-- Hybrid section -->
     <div class="section-header" style="margin-top:8px">
-      <span id="label-hybrid">🔀 Hybrid Local</span> <span class="pill">D6 cap C · TC ≥ $220K</span>
+      <span id="label-hybrid">🔀 Hybrid Local</span>
       <span class="count" id="hybrid-count"></span>
     </div>
     <div id="hybrid-section"></div>
 
     <!-- In-Person section -->
     <div class="section-header" style="margin-top:8px">
-      <span id="label-inperson">📍 In-Person Local</span> <span class="pill">Track IRL · TC ≥ $220K</span>
+      <span id="label-inperson">📍 In-Person Local</span>
       <span class="count" id="inperson-count"></span>
     </div>
     <div id="inperson-section"></div>
@@ -817,9 +806,8 @@
           <label><input type="radio" name="tier" id="tier-all" value="all" onchange="onRejFilterChange()"> All rejections</label>
         </div>
         <div class="filter-group" id="rej-tab-group">
-          <span>Role type</span>
-          <button class="tab-btn active" id="rej-tab-pm"  onclick="handleRejTab('pm')">TPM &amp; PM <span class="tab-count" id="rej-pm-count">0</span></button>
-          <button class="tab-btn"        id="rej-tab-pjm" onclick="handleRejTab('pjm')">Project Manager <span class="tab-count" id="rej-pjm-count">0</span></button>
+          <span title="Set in Configuration, Tracks tab, under Role Types" style="cursor:help">Role Type</span>
+          <div id="rej-tab-buttons" class="rej-tab-buttons"><!-- built by renderRejectedSection() from the role types present --></div>
         </div>
       </div>
 
@@ -834,31 +822,38 @@
 // ═══════════════════════════════════════════════════════════════
 // CONSTANTS
 // ═══════════════════════════════════════════════════════════════
+// Results saved before the match score (out of 100) carry six 1-5 dimension
+// scores instead. Both are shown, so older runs stay readable.
 const DIM_LABELS = [
-  'D1 - Title & Level',
-  'D2 - Scope Alignment',
+  'D1 - Title Quality',
+  'D2 - Scope & Complexity',
   'D3 - Domain Fit',
-  'D4 - Technical Depth',
-  'D5 - Seniority / Comp',
+  'D4 - Qualifications Match',
+  'D5 - Salary Fit',
   'D6 - Work Arrangement',
 ];
 const DIM_KEYS  = ['d1','d2','d3','d4','d5','d6'];
-const GRADE_ORDER = { 'A': 1, 'B': 2, 'C': 3, 'D': 4 };
+const GRADE_ORDER = { 'A': 1, 'B': 2, 'C': 3 };
 
+// Same order as CAT_ORDER in src/eval.js, plus title_level, which appears only in
+// results saved by earlier versions and is kept so they show a readable label.
 const REJ_CAT_ORDER = [
-  'salary_floor','clearance','geo_restriction','travel',
-  'domain_exclusion','title_level','non_pm','prescreen','grade_d','other'
+  'salary_floor','salary_missing','clearance','geo_restriction','travel','employment_type','blocked_title',
+  'domain_exclusion','title_level','repost','prescreen','grade_d','other'
 ];
 const REJ_CAT_LABELS = {
   salary_floor:     'Salary Below Floor',
-  clearance:        'Clearance / Competitor',
+  salary_missing:   'Salary Not Listed',
+  clearance:        'Clearance Required',
   geo_restriction:  'Geographic Restriction',
   travel:           'Travel Requirement',
   domain_exclusion: 'Domain / Expertise',
+  blocked_title:    'Blocked Title Keyword',
   title_level:      'Title Level Mismatch',
-  non_pm:           'Non-PM Title',
   prescreen:        'Pre-Screen Failure',
-  grade_d:          'Grade D',
+  grade_d:          'Score Below Your Bar',
+  employment_type:  'Employment Type Not Accepted',
+  repost:           'Reposted Listing',
   other:            'Other',
 };
 
@@ -874,12 +869,23 @@ let sourceTab   = 'jobright';
 
 const isAtsRole = r => !!(r.id && r.id.startsWith('ats_'));
 
+// Track colors, assigned in configured order from the palette's --track-N
+// tokens. Values only ever come from TRACK_COLORS, never from data, so they are
+// safe in a style attribute.
+const TRACK_COLORS = [1, 2, 3, 4, 5, 6, 7].map(n => `var(--track-${n})`);
+let trackColors = {};
+function trackColor(key) {
+  if (!(key in trackColors)) trackColors[key] = TRACK_COLORS[Object.keys(trackColors).length % TRACK_COLORS.length];
+  return trackColors[key];
+}
+
 const sectionState = {
-  remote:   { tab: 'pm', sortCol: 'grade', sortDir: 'asc' },
-  hybrid:   { tab: 'pm', sortCol: 'grade', sortDir: 'asc' },
-  inperson: { tab: 'pm', sortCol: 'grade', sortDir: 'asc' },
+  remote:   { tab: null, sortCol: 'grade', sortDir: 'asc' },
+  hybrid:   { tab: null, sortCol: 'grade', sortDir: 'asc' },
+  inperson: { tab: null, sortCol: 'grade', sortDir: 'asc' },
 };
-const rejState = { tab: 'pm', sortCol: 'category', sortDir: 'asc', tier: 'tier1' };
+// tab: the selected role type label, or null for "All".
+const rejState = { tab: null, sortCol: 'category', sortDir: 'asc', tier: 'tier1' };
 
 // ═══════════════════════════════════════════════════════════════
 // ELECTRON BOOT
@@ -890,12 +896,12 @@ const errorMsg   = document.getElementById('error-msg');
 // Reflect Jobright auth state in both status badges and the Sign In button.
 function updateAuthBadge(loggedIn) {
   const text  = loggedIn ? '✓ Jobright session authenticated' : '⚠ Not signed in to Jobright';
-  const color = loggedIn ? '#4caf7d' : 'var(--muted)';
+  const color = loggedIn ? 'var(--green)' : 'var(--muted)';
   const home = document.getElementById('auth-status');
   if (home) {
     home.textContent = text;
     home.style.color = color;
-    home.style.borderColor = loggedIn ? '#4caf7d' : 'var(--border)';
+    home.style.borderColor = loggedIn ? 'var(--green)' : 'var(--border)';
   }
   const hdr = document.getElementById('auth-status-header');
   if (hdr) { hdr.textContent = text; hdr.style.color = color; }
@@ -947,7 +953,7 @@ if (window.electronAPI) {
     if (days) setRunPeriod(days, /*persist=*/false);
   }).catch(() => {});
 
-  // Scrape progress events — store cleanup fns to prevent listener accumulation on reload
+  // Scrape progress events: store cleanup fns to prevent listener accumulation on reload
   const _cleanupProgress = window.electronAPI.onScrapeProgress(({ step, message, pct }) => {
     // progress-panel lives inside #dropzone, so we must ensure dropzone is visible
     // regardless of whether the dashboard is currently showing (re-scrape case).
@@ -970,21 +976,21 @@ if (window.electronAPI) {
     appendProgressLog(message);
   });
 
-  const _cleanupComplete = window.electronAPI.onScrapeComplete(({ outputPath, counts, cancelled }) => {
+  const _cleanupComplete = window.electronAPI.onScrapeComplete(({ outputPath, counts, canceled }) => {
     document.getElementById('progress-panel').style.display = 'none';
-    // A run that reviewed nothing (cancelled early, all duplicates, or no matches)
+    // A run that reviewed nothing (canceled early, all duplicates, or no matches)
     // should explain itself instead of showing a blank board.
     if (counts && (counts.accepted | 0) === 0 && (counts.rejected | 0) === 0) {
       resetToDropzone();
       document.getElementById('empty-heading').textContent =
-        cancelled ? 'Run cancelled - nothing to show yet' : 'No new listings to review';
-      document.getElementById('empty-subtext').textContent = cancelled
+        canceled ? 'Run canceled - nothing to show yet' : 'No new listings to review';
+      document.getElementById('empty-subtext').textContent = canceled
         ? 'The scrape was stopped before any roles were collected. A (empty) result was still saved.'
         : 'Everything found was already seen in a previous run (deduplicated), or nothing matched. '
           + 'Check the activity feed counts, try a longer period, or open a previous run with Load Past Result.';
       return;
     }
-    // Otherwise render the saved artifact (partial if cancelled mid-run).
+    // Otherwise render the saved artifact (partial if canceled mid-run).
     window.electronAPI.getLatestResult().then(data => { if (data) render(data); });
   });
 
@@ -994,10 +1000,10 @@ if (window.electronAPI) {
     showError('Scrape failed: ' + message);
   });
 
-  const _cleanupCancelled = window.electronAPI.onScrapeCancelled?.(() => {
+  const _cleanupCanceled = window.electronAPI.onScrapeCanceled?.(() => {
     // Leave the progress view instead of hanging on the last message.
     resetToDropzone();
-    document.getElementById('empty-heading').textContent = 'Run cancelled';
+    document.getElementById('empty-heading').textContent = 'Run canceled';
     document.getElementById('empty-subtext').textContent = 'The scan was stopped. Press Run Now to start again.';
   });
 
@@ -1009,7 +1015,7 @@ if (window.electronAPI) {
     _cleanupProgress?.();
     _cleanupComplete?.();
     _cleanupError?.();
-    _cleanupCancelled?.();
+    _cleanupCanceled?.();
     _cleanupLogin?.();
     _cleanupAuthReq?.();
   });
@@ -1083,8 +1089,8 @@ function cancelScrape() {
   if (!window.electronAPI) return;
   window.electronAPI.cancelScrape();
   const btn = document.getElementById('cancel-btn');
-  if (btn) { btn.textContent = 'Cancelling…'; btn.disabled = true; btn.style.opacity = '0.6'; }
-  appendProgressLog('Cancelling… finishing the current request.');
+  if (btn) { btn.textContent = 'Canceling…'; btn.disabled = true; btn.style.opacity = '0.6'; }
+  appendProgressLog('Canceling… finishing the current request.');
 }
 
 // Skip the current Jobright pass and roll over to the next, without ending the run.
@@ -1166,7 +1172,7 @@ function openResultPicker(paths) {
   });
 
   panel.querySelectorAll('.picker-del').forEach(btn => {
-    btn.addEventListener('mouseenter', () => { btn.style.borderColor = '#ff5e5e'; btn.style.color = '#ff5e5e'; });
+    btn.addEventListener('mouseenter', () => { btn.style.borderColor = 'var(--danger)'; btn.style.color = 'var(--danger)'; });
     btn.addEventListener('mouseleave', () => { btn.style.borderColor = 'var(--border)'; btn.style.color = 'var(--muted)'; });
     btn.addEventListener('click', async () => {
       const p = paths[parseInt(btn.getAttribute('data-idx'), 10)];
@@ -1210,8 +1216,7 @@ function resetToDropzone() {
   document.getElementById('rej-filter-bar').classList.remove('visible');
   document.getElementById('rej-header').classList.remove('open');
   document.getElementById('rej-toggle-icon').style.transform = '';
-  document.getElementById('rej-tab-pm').classList.add('active');
-  document.getElementById('rej-tab-pjm').classList.remove('active');
+  rejState.tab = null;
   document.getElementById('tier-t1').checked = true;
 }
 
@@ -1230,8 +1235,10 @@ function render(data) {
   allRejRoles  = rejData ? (rejData.roles || []) : [];
 
   // Section header labels - driven by track_locations from the JSON meta
-  const _irlLoc = (meta.track_locations || {}).IRL;
-  const _locSuffix = _irlLoc ? ` ${_irlLoc}` : '';
+  // Name the local area in the Hybrid / In-Person headers when every track
+  // that has a location shares the same one; otherwise keep them generic.
+  const _locs = [...new Set(Object.values(meta.track_locations || {}).filter(Boolean))];
+  const _locSuffix = _locs.length === 1 ? ` ${_locs[0]}` : '';
   document.getElementById('label-hybrid').textContent   = `🔀 Hybrid${_locSuffix}`;
   document.getElementById('label-inperson').textContent = `📍 In-Person${_locSuffix}`;
 
@@ -1241,18 +1248,20 @@ function render(data) {
 
   // Header meta
   document.getElementById('header-meta').innerHTML = [
-    meta.date             ? `<span>📅 ${meta.date}${meta.time ? ` · 🕒 ${meta.time}` : ''}</span>` : '',
-    meta.search_term      ? `<span>🔍 ${meta.search_term}</span>` : '',
-    meta.locations        ? `<span>🌐 ${meta.locations}</span>` : '',
-    meta.qualifying_count != null ? `<span>📊 ${meta.qualifying_count} qualifying roles</span>` : '',
+    meta.date             ? `<span>📅 ${esc(meta.date)}${meta.time ? ` · 🕒 ${esc(meta.time)}` : ''}</span>` : '',
+    meta.search_term      ? `<span>🔍 ${esc(meta.search_term)}</span>` : '',
+    meta.locations        ? `<span>🌐 ${esc(meta.locations)}</span>` : '',
+    meta.qualifying_count != null ? `<span>📊 ${esc(meta.qualifying_count)} qualifying roles</span>` : '',
   ].filter(Boolean).join('');
 
 
   // Stats bar
-  const TRACK_CHIP_COLORS = ['#7de8b8', '#f5c46a', '#8fa8ff', '#ff9e7a', '#c4b5fd'];
-  const trackCountChips = Object.entries(meta.track_counts || {}).map(([key, count], i) => {
+  trackColors = {};
+  [...Object.keys(meta.track_labels || {}), ...allRoles.map(r => r.track), ...allRejRoles.map(r => r.track)]
+    .filter(Boolean).forEach(trackColor);
+  const trackCountChips = Object.entries(meta.track_counts || {}).map(([key, count]) => {
     const label = (meta.track_labels || {})[key] || key;
-    return chip(label, count, TRACK_CHIP_COLORS[i % TRACK_CHIP_COLORS.length]);
+    return chip(label, count, trackColor(key));
   });
   const chips = [
     meta.reviewed_count   != null ? chip('Reviewed',    `${meta.reviewed_count} / ${meta.total_results || '?'}`) : '',
@@ -1297,7 +1306,7 @@ function render(data) {
     const label  = trackLabels[key] || key;
     const checked = prevTrackState[key] !== undefined ? prevTrackState[key] : true;
     const lbl = document.createElement('label');
-    lbl.innerHTML = `<input type="checkbox" data-track="${key}"${checked ? ' checked' : ''} onchange="onFilterChange()"> ${esc(label)} <small style="color:var(--muted);font-size:10px">(${key})</small>`;
+    lbl.innerHTML = `<input type="checkbox" data-track="${esc(key)}"${checked ? ' checked' : ''} onchange="onFilterChange()"> ${esc(label)} <small style="color:var(--muted);font-size:10px">(${esc(key)})</small>`;
     trackGroup.appendChild(lbl);
   });
 
@@ -1308,13 +1317,16 @@ function render(data) {
   typeGroup.querySelectorAll('input[type=checkbox]').forEach(cb => {
     prevTypeState[cb.dataset.cat] = cb.checked;
   });
-  typeGroup.innerHTML = '<span>Type</span>';
+  typeGroup.innerHTML = '<span title="Set in Configuration, Tracks tab, under Role Types" style="cursor:help">Role Type</span>';
   allCats.forEach(cat => {
     const checked = prevTypeState[cat] !== undefined ? prevTypeState[cat] : true;
     const lbl = document.createElement('label');
-    lbl.innerHTML = `<input type="checkbox" data-cat="${cat}"${checked ? ' checked' : ''} onchange="onFilterChange()"> ${esc(cat)}`;
+    lbl.innerHTML = `<input type="checkbox" data-cat="${esc(cat)}"${checked ? ' checked' : ''} onchange="onFilterChange()"> ${esc(cat)}`;
     typeGroup.appendChild(lbl);
   });
+
+  buildFacet('emp-filter-group', 'Employment', empOf);
+  buildFacet('by-filter-group',  'Posted by',  byOf);
 
   applyTrackFilter();
 
@@ -1331,6 +1343,74 @@ function render(data) {
 // ═══════════════════════════════════════════════════════════════
 // ACCEPTED: FILTER + SECTIONS
 // ═══════════════════════════════════════════════════════════════
+// ── Employment type and poster filters ─────────────────────────
+// One checkbox per value that came up in the run, accepted or rejected, with
+// the number of accepted roles that have it. A run saved before these fields
+// existed has neither, and the group is hidden.
+function empOf(r) { return r.employment_type || null; }
+function byOf(r)  { return (r.posted_by && r.posted_by.label) || null; }
+
+function buildFacet(groupId, title, valueOf) {
+  const group = document.getElementById(groupId);
+  const prev = {};
+  group.querySelectorAll('input[type=checkbox]').forEach(cb => { prev[cb.dataset.val] = cb.checked; });
+  const vals = [...new Set([...allRoles, ...allRejRoles].map(valueOf).filter(Boolean))].sort();
+  group.style.display = vals.length ? '' : 'none';
+  group.innerHTML = `<span>${esc(title)}</span>`;
+  for (const v of vals) {
+    const n = allRoles.filter(r => valueOf(r) === v).length;
+    const lbl = document.createElement('label');
+    lbl.innerHTML = `<input type="checkbox" data-val="${esc(v)}"${prev[v] === false ? '' : ' checked'} onchange="onFilterChange()"> ` +
+      `${esc(v)} <small style="color:var(--muted);font-size:10px">(${n})</small>`;
+    group.appendChild(lbl);
+  }
+}
+function facetHidden() {
+  const off = id => new Set([...document.querySelectorAll(`#${id} input[type=checkbox]`)]
+    .filter(cb => !cb.checked).map(cb => cb.dataset.val));
+  return { emp: off('emp-filter-group'), by: off('by-filter-group') };
+}
+function passesFacets(r, hidden) {
+  return !(empOf(r) && hidden.emp.has(empOf(r))) && !(byOf(r) && hidden.by.has(byOf(r)));
+}
+
+// Labels next to the role title. Full-time and "Not stated" are not shown, nor
+// is the employer as poster; the filters above cover those.
+// A target company is one the user especially wants to work for. Results saved
+// before this field existed carried it as a "Target company" flag.
+function isTarget(r) { return r.target_company === true || (r.flags || []).includes('Target company'); }
+
+function roleTags(r) {
+  const tags = [];
+  if (isTarget(r)) tags.push('<span class="badge tag target">Target company</span>');
+  const emp = empOf(r);
+  if (emp && emp !== 'Full-time' && emp !== 'Not stated') tags.push(`<span class="badge tag">${esc(emp)}</span>`);
+  if (r.posted_by && r.posted_by.kind !== 'employer') {
+    tags.push(`<span class="badge tag${r.posted_by.kind === 'job_board' ? ' board' : ''}">${esc(r.posted_by.label)}</span>`);
+  }
+  const also = r.also_posted_by || [];
+  if (also.length) {
+    tags.push(`<span class="badge tag" title="${esc('Also posted by ' + also.map(a => a.company).join(', '))}">+${also.length} more</span>`);
+  }
+  return tags.join('');
+}
+
+// Who posted it, why it was labeled that way, and the other copies of the job.
+function sourceHtml(r) {
+  if (!r.posted_by && !r.employment_type) return '';
+  const reasons = (r.posted_by?.reasons || []).map(x => `<li>${esc(x)}</li>`).join('');
+  const also = (r.also_posted_by || []).map(a => {
+    const u = safeUrl(a.apply_url);
+    const name = u ? `<a href="${escHtml(u)}" target="_blank" rel="noopener noreferrer">${esc(a.company)}</a>` : esc(a.company);
+    return `<li>${name} (${esc(a.posted_by || '')})</li>`;
+  }).join('');
+  return `<div class="source-block">
+    ${r.employment_type ? `<div><strong>Employment:</strong> ${esc(r.employment_type)}</div>` : ''}
+    ${r.posted_by ? `<div><strong>Posted by:</strong> ${esc(r.posted_by.label)}${reasons ? `<ul>${reasons}</ul>` : ''}</div>` : ''}
+    ${also ? `<div><strong>Also posted by:</strong><ul>${also}</ul></div>` : ''}
+  </div>`;
+}
+
 function onFilterChange() {
   applyTrackFilter();
   if (rejOpen && rejRendered) renderRejectedSection();
@@ -1356,9 +1436,11 @@ function applyTrackFilter() {
   // If filters haven't been built yet (no data loaded), show everything
   const noTrackFilter = activeTracks.size === 0;
   const noTypeFilter  = activeTypes.size  === 0;
+  const hidden = facetHidden();
   filteredRoles = allRoles.filter(r =>
     (noTrackFilter || activeTracks.has(r.track)) &&
     (noTypeFilter  || activeTypes.has(r.role_cat || 'Other')) &&
+    passesFacets(r, hidden) &&
     (sourceTab === 'ats' ? isAtsRole(r) : !isAtsRole(r))
   );
   renderAllSections();
@@ -1367,6 +1449,8 @@ function applyTrackFilter() {
 function resetFilters() {
   document.querySelectorAll('#track-filter-group input[type=checkbox]').forEach(cb => { cb.checked = true; });
   document.querySelectorAll('#type-filter-group input[type=checkbox]').forEach(cb => { cb.checked = true; });
+  document.querySelectorAll('#emp-filter-group input[type=checkbox], #by-filter-group input[type=checkbox]')
+    .forEach(cb => { cb.checked = true; });
   onFilterChange();
 }
 
@@ -1376,35 +1460,57 @@ function renderAllSections() {
   renderSection('inperson', 'in-person');
 }
 
+// ── Role type tabs ──────────────────────────────────────────────
+// Built from the role types present in the roles being shown, the same way the
+// Role Type checkboxes are. Nothing here depends on any particular label, so
+// renaming or adding a role type in Configuration can never silently move
+// roles between tabs. The bar is hidden when there is only one type to show.
+//
+// Labels come from user config, so they are never placed inside JavaScript:
+// each button carries its label in data-type and the handler reads it back
+// with this.dataset.type. The "All" button has no data-type, which reads as null.
+function roleTypeOf(r) { return r.role_cat || 'Other'; }
+
+function roleTypeTabs(roles) {
+  const counts = new Map();
+  for (const r of roles) counts.set(roleTypeOf(r), (counts.get(roleTypeOf(r)) || 0) + 1);
+  // Same order as the Role Type checkboxes (plain .sort() on the labels).
+  return [...counts.entries()].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+}
+
+// Keep the selected type while it still has roles; otherwise fall back to All.
+function currentRoleTab(selected, tabs) {
+  return selected !== null && tabs.some(([t]) => t === selected) ? selected : null;
+}
+
+function rolesOfType(roles, type) {
+  return type === null ? roles : roles.filter(r => roleTypeOf(r) === type);
+}
+
+function roleTypeTabButtons(tabs, total, active, handler) {
+  const btn = (type, label, count) =>
+    `<button class="tab-btn${type === active ? ' active' : ''}"` +
+    (type === null ? '' : ` data-type="${esc(type)}"`) +
+    ` onclick="${handler}">${esc(label)} <span class="tab-count">${count}</span></button>`;
+  return btn(null, 'All', total) + tabs.map(([t, n]) => btn(t, t, n)).join('');
+}
+
 function renderSection(sectionId, bucket) {
   const ss           = sectionState[sectionId];
   const sectionRoles = filteredRoles.filter(r => r.work_type_bucket === bucket);
-  const pmRoles      = sectionRoles.filter(r => r.role_cat !== 'PjM');
-  const pjmRoles     = sectionRoles.filter(r => r.role_cat === 'PjM');
-  const activeRoles  = ss.tab === 'pm' ? pmRoles : pjmRoles;
-  const sorted       = sortRoles(activeRoles, ss.sortCol, ss.sortDir);
+  const tabs         = roleTypeTabs(sectionRoles);
+  ss.tab             = currentRoleTab(ss.tab, tabs);
+  const sorted       = sortRoles(rolesOfType(sectionRoles, ss.tab), ss.sortCol, ss.sortDir);
 
   const countEl = document.getElementById(sectionId + '-count');
   if (countEl) countEl.textContent = `${sectionRoles.length} total`;
 
   const container = document.getElementById(sectionId + '-section');
   if (!container) return;
-  container.innerHTML = buildTabBar(sectionId, pmRoles.length, pjmRoles.length) +
-                        buildTableHtml(sorted, sectionId);
-}
-
-function buildTabBar(sectionId, pmCount, pjmCount) {
-  const ss = sectionState[sectionId];
-  const pmActive  = ss.tab === 'pm'  ? 'active' : '';
-  const pjmActive = ss.tab === 'pjm' ? 'active' : '';
-  return `<div class="tab-bar">
-    <button class="tab-btn ${pmActive}"  onclick="handleTab('${sectionId}','pm')">
-      TPM &amp; PM <span class="tab-count">${pmCount}</span>
-    </button>
-    <button class="tab-btn ${pjmActive}" onclick="handleTab('${sectionId}','pjm')">
-      Project Manager <span class="tab-count">${pjmCount}</span>
-    </button>
-  </div>`;
+  const tabBar = tabs.length < 2 ? '' :
+    `<div class="tab-bar">${roleTypeTabButtons(tabs, sectionRoles.length, ss.tab,
+      `handleTab('${sectionId}', this.dataset.type ?? null)`)}</div>`;
+  container.innerHTML = tabBar + buildTableHtml(sorted, sectionId);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1415,7 +1521,7 @@ const COLS = [
   { key: 'company', label: 'Company', sortable: true },
   { key: 'title',   label: 'Role',    sortable: true },
   { key: 'track',   label: 'Track',   sortable: false },
-  { key: 'type',    label: 'Type',    sortable: false },
+  { key: 'type',    label: 'Work Type', sortable: false },
   { key: 'posted',  label: 'Posted',  sortable: true },
   { key: 'salary',  label: 'Salary',  sortable: false },
   { key: 'grade',   label: 'Grade',   sortable: true,  center: true },
@@ -1457,12 +1563,12 @@ function roleRowPair(r, colspan) {
   const wt = { ...wtBase, label: wtBase.label + (r.arrangement_uncertain ? '?' : '') };
 
   const capped    = r.fit && r.grade && r.fit !== r.grade;
-  const capArrow  = capped ? `<span class="cap-arrow" title="Capped from ${r.fit}">↓</span>` : '';
-  const gradeBadge = `<span class="badge grade-${r.grade}">${r.grade}${capArrow}</span>`;
+  const capArrow  = capped ? `<span class="cap-arrow" title="Lowered from ${esc(r.fit)}">↓</span>` : '';
+  const gradeBadge = `<span class="badge grade-${esc(r.grade)}">${esc(r.grade)}${capArrow}</span>`;
 
   const ageTier   = r.age_tier || 'Unknown';
   const postedHtml = `<span class="posted-${ageTier}">${esc(r.posted || 'Unknown')}</span>`;
-  const trackBadge = r.track ? `<span class="badge track-${r.track}">${r.track}</span>` : '-';
+  const trackBadge = r.track ? `<span class="badge track" style="--track-color:${trackColor(r.track)}">${esc(r.track)}</span>` : '-';
 
   const mainRow = `
     <tr class="job-row" onclick="toggle('${id}')">
@@ -1471,39 +1577,48 @@ function roleRowPair(r, colspan) {
         <div class="company-name">${esc(r.company)}</div>
         <div class="location-text">${esc(r.location || '')}</div>
       </td>
-      <td><div class="role-title">${esc(r.role_title)}</div></td>
+      <td><div class="role-title">${esc(r.role_title)}${roleTags(r)}</div></td>
       <td>${trackBadge}</td>
       <td><span class="badge ${wt.cls}">${wt.label}</span></td>
       <td>${postedHtml}</td>
       <td><span class="salary${r.salary_unknown ? ' unknown' : ''}">${esc(r.salary || 'Not listed')}</span></td>
       <td class="col-center">${gradeBadge}</td>
-      <td class="col-center">${r.apply_url
-        ? `<a class="apply-link" href="${r.apply_url}" target="_blank" onclick="event.stopPropagation()">Apply →</a>`
+      <td class="col-center">${safeUrl(r.apply_url)
+        ? `<a class="apply-link" href="${escHtml(safeUrl(r.apply_url))}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">Apply →</a>`
         : '<span style="color:var(--muted);font-size:12px">-</span>'}
       </td>
     </tr>`;
 
-  const dimRows = DIM_KEYS.map((key, i) => {
-    const d = dims[key] || {};
-    const score = d.score != null ? d.score : '-';
-    return `<tr><td>${DIM_LABELS[i]}</td><td class="dim-${score}">${score}</td><td>${esc(d.rationale || '')}</td></tr>`;
-  }).join('');
+  // Color a signal by how much of it the job earned, on the same 5-step scale.
+  const shade = (pts, max) => !max ? 3 : pts >= max ? 5 : pts / max >= 0.75 ? 4 : pts / max >= 0.5 ? 3 : pts > 0 ? 2 : 1;
+  const scoreRows = r.match
+    ? (r.match.parts || []).map(p =>
+        `<tr><td>${esc(p.signal)}</td><td class="dim-${shade(p.points, p.max)}">${esc(p.points)} / ${esc(p.max)}</td><td>${esc(p.detail || '')}</td></tr>`
+      ).join('')
+    : DIM_KEYS.map((key, i) => {
+        const d = dims[key] || {};
+        const score = d.score != null ? d.score : '-';
+        return `<tr><td>${DIM_LABELS[i]}</td><td class="dim-${esc(score)}">${esc(score)}</td><td>${esc(d.rationale || '')}</td></tr>`;
+      }).join('');
+  const scoreText = r.match
+    ? `${esc(r.match.score)} / 100`
+    : `${r.weighted_score != null ? esc(r.weighted_score) : '-'} / 25`;
 
   const fitPart = capped
-    ? `<span>Fit: <strong class="cap-explain">${r.fit} → capped to ${r.grade}</strong></span>
-       <span class="cap-explain">⚠ ${r.age_tier || ''} posting</span>`
+    ? `<span>Fit: <strong class="cap-explain">${esc(r.fit)} → lowered to ${esc(r.grade)}</strong></span>
+       <span class="cap-explain">⚠ ${esc(r.age_tier || '')} posting</span>`
     : '';
   const capNoteParts = [
-    r.d6_cap  ? `D6 cap applied: <strong>${r.d6_cap}</strong>` : '',
-    r.age_cap ? `Age cap: <strong>${r.age_cap}</strong>` : '',
+    r.d6_cap  ? `D6 cap applied: <strong>${esc(r.d6_cap)}</strong>` : '',
+    r.age_cap ? `Age cap: <strong>${esc(r.age_cap)}</strong>` : '',
   ].filter(Boolean);
 
   const rawScore = `<div class="raw-score">
-    <span>Score: <strong>${r.weighted_score != null ? r.weighted_score : '-'} / 25</strong></span>
-    <span>Grade: <strong>${r.grade}</strong></span>
+    <span>Score: <strong>${scoreText}</strong></span>
+    <span>Grade: <strong>${esc(r.grade)}</strong></span>
     ${fitPart}
     ${capNoteParts.map(s => `<span>${s}</span>`).join('')}
-    ${r.age_tier ? `<span>Age: <strong class="posted-${r.age_tier}">${r.age_tier}</strong></span>` : ''}
+    ${r.age_tier ? `<span>Age: <strong class="posted-${esc(r.age_tier)}">${esc(r.age_tier)}</strong></span>` : ''}
   </div>`;
 
   const prescreenHtml = Object.entries(pre).map(([, q]) => {
@@ -1512,7 +1627,7 @@ function roleRowPair(r, colspan) {
     return `<div class="prescreen-item"><span class="ps-icon ${cls}">${icon}</span><span>${esc(q.note || '')}</span></div>`;
   }).join('');
 
-  const flagsHtml = (r.flags || []).map(f =>
+  const flagsHtml = (r.flags || []).filter(f => f !== 'Target company').map(f =>
     `<div style="color:var(--flag);font-size:12px;margin-top:4px">⚠ ${esc(f)}</div>`
   ).join('');
 
@@ -1524,12 +1639,13 @@ function roleRowPair(r, colspan) {
       <td colspan="${colspan}" class="detail-cell">
         <div class="detail-inner">
           <div class="detail-block">
-            <h4>Dimension Scores</h4>
-            <table class="dim-table">${dimRows}</table>
+            <h4>${r.match ? 'Match Score' : 'Dimension Scores'}</h4>
+            <table class="dim-table${r.match ? ' match-table' : ''}">${scoreRows}</table>
             ${rawScore}
           </div>
           <div class="detail-block">
             <h4>Pre-Screen &amp; Notes</h4>
+            ${sourceHtml(r)}
             ${prescreenHtml ? `<div class="prescreen">${prescreenHtml}</div>` : ''}
             <div class="notes-text">${esc(r.notes || '-')}</div>
             ${flagsHtml}
@@ -1579,14 +1695,11 @@ function onRejFilterChange() {
 
 function handleRejTab(tab) {
   rejState.tab = tab;
-  document.getElementById('rej-tab-pm').classList.toggle('active',  tab === 'pm');
-  document.getElementById('rej-tab-pjm').classList.toggle('active', tab === 'pjm');
   renderRejectedSection();
 }
 
 function getFilteredRejRoles() {
-  // Use the same track checkboxes as the accepted side (built with data-track),
-  // not non-existent "filt-XXX" element ids. If none are checked, show all tracks.
+  // Same track checkboxes as the accepted side. If none are checked, show all tracks.
   const activeTracks = new Set(
     [...document.querySelectorAll('#track-filter-group input[type=checkbox]')]
       .filter(cb => cb.checked).map(cb => cb.dataset.track)
@@ -1599,19 +1712,28 @@ function getFilteredRejRoles() {
   if (rejState.tier !== 'all') {
     roles = roles.filter(r => r.rejection_tier === rejState.tier);
   }
-  return roles;
+  // Honor the Role Type checkboxes too. They are built from accepted roles
+  // only, so a type that appears only among rejections has no checkbox; only
+  // types the user has explicitly unchecked are hidden here.
+  const uncheckedTypes = new Set(
+    [...document.querySelectorAll('#type-filter-group input[type=checkbox]')]
+      .filter(cb => !cb.checked).map(cb => cb.dataset.cat)
+  );
+  if (uncheckedTypes.size) roles = roles.filter(r => !uncheckedTypes.has(roleTypeOf(r)));
+  const hidden = facetHidden();
+  return roles.filter(r => passesFacets(r, hidden));
 }
 
 function renderRejectedSection() {
   const allFiltered = getFilteredRejRoles();
-  const pmRoles     = allFiltered.filter(r => r.role_cat !== 'PjM');
-  const pjmRoles    = allFiltered.filter(r => r.role_cat === 'PjM');
-  const activeRoles = rejState.tab === 'pm' ? pmRoles : pjmRoles;
+  const tabs        = roleTypeTabs(allFiltered);
+  rejState.tab      = currentRoleTab(rejState.tab, tabs);
+  const activeRoles = rolesOfType(allFiltered, rejState.tab);
   const sorted      = sortRejRoles(activeRoles);
 
-  // Update tab counts
-  document.getElementById('rej-pm-count').textContent  = pmRoles.length;
-  document.getElementById('rej-pjm-count').textContent = pjmRoles.length;
+  document.getElementById('rej-tab-group').style.display = tabs.length < 2 ? 'none' : '';
+  document.getElementById('rej-tab-buttons').innerHTML =
+    roleTypeTabButtons(tabs, allFiltered.length, rejState.tab, 'handleRejTab(this.dataset.type ?? null)');
 
   const content = document.getElementById('rej-content');
   if (!activeRoles.length) {
@@ -1627,7 +1749,7 @@ const REJ_COLS = [
   { key: 'company',  label: 'Company',  sortable: true },
   { key: 'title',    label: 'Role',     sortable: true },
   { key: 'track',    label: 'Track',    sortable: false },
-  { key: 'type',     label: 'Type',     sortable: false },
+  { key: 'type',     label: 'Work Type', sortable: false },
   { key: 'posted',   label: 'Posted',   sortable: true },
   { key: 'salary',   label: 'Salary',   sortable: false },
   { key: 'category', label: 'Reason',   sortable: true },
@@ -1662,7 +1784,7 @@ function rejRowPair(r, colspan) {
 
   const ageTier    = r.age_tier || 'Unknown';
   const postedHtml = `<span class="posted-${ageTier}">${esc(r.posted || 'Unknown')}</span>`;
-  const trackBadge = r.track ? `<span class="badge track-${r.track}">${r.track}</span>` : '-';
+  const trackBadge = r.track ? `<span class="badge track" style="--track-color:${trackColor(r.track)}">${esc(r.track)}</span>` : '-';
 
   const cat      = r.reason_cat || 'other';
   const catLabel = REJ_CAT_LABELS[cat] || cat;
@@ -1675,14 +1797,14 @@ function rejRowPair(r, colspan) {
         <div class="company-name">${esc(r.company)}</div>
         <div class="location-text">${esc(r.location || '')}</div>
       </td>
-      <td><div class="role-title">${esc(r.role_title)}</div></td>
+      <td><div class="role-title">${esc(r.role_title)}${roleTags(r)}</div></td>
       <td>${trackBadge}</td>
       <td><span class="badge ${wt.cls}">${wt.label}</span></td>
       <td>${postedHtml}</td>
       <td><span class="salary${r.salary_unknown ? ' unknown' : ''}">${esc(r.salary || 'Not listed')}</span></td>
       <td>${catBadge}</td>
-      <td class="col-center">${r.apply_url
-        ? `<a class="apply-link" href="${r.apply_url}" target="_blank" onclick="event.stopPropagation()">Apply →</a>`
+      <td class="col-center">${safeUrl(r.apply_url)
+        ? `<a class="apply-link" href="${escHtml(safeUrl(r.apply_url))}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">Apply →</a>`
         : '<span style="color:var(--muted);font-size:12px">-</span>'}
       </td>
     </tr>`;
@@ -1691,6 +1813,7 @@ function rejRowPair(r, colspan) {
     <tr class="detail-row" id="detail-${id}">
       <td colspan="${colspan}" class="rej-detail-cell">
         <div class="rej-reason-full">✗ ${esc(r.reason || '-')}</div>
+        ${sourceHtml(r)}
         ${r.notes ? `<div class="rej-notes">${esc(r.notes)}</div>` : ''}
       </td>
     </tr>`;
@@ -1709,7 +1832,7 @@ function sortRoles(roles, col, dir) {
       case 'title':   va = a.role_title.toLowerCase(); vb = b.role_title.toLowerCase(); break;
       case 'posted':  va = a.posted_days ?? 999;       vb = b.posted_days ?? 999;       break;
       case 'grade':   va = GRADE_ORDER[a.grade] ?? 99; vb = GRADE_ORDER[b.grade] ?? 99; break;
-      case 'score':   va = -(a.weighted_score ?? 0);   vb = -(b.weighted_score ?? 0);   break;
+      case 'score':   va = -(a.match?.score ?? a.weighted_score ?? 0);   vb = -(b.match?.score ?? b.weighted_score ?? 0);   break;
       default:        va = 0; vb = 0;
     }
     if (va < vb) return dir === 'asc' ? -1 : 1;
@@ -1814,13 +1937,11 @@ function chip(label, val, color) {
   return `<div class="stat-chip">${label} ${valHtml}</div>`;
 }
 
-function esc(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
+// esc() is kept as the local name for the shared helper so the ~14 existing
+// call sites stay untouched. The shared version also escapes ' , which the
+// previous local copy did not, and this page interpolates into single-quoted
+// inline handler arguments.
+function esc(str) { return escHtml(str); }
 </script>
 </body>
 </html>

@@ -2,12 +2,13 @@
 
 /**
  * src/scraper/jobright.js
- * Port of jobright_scraper.py — uses Electron hidden BrowserWindows +
- * webContents.executeJavaScript() instead of Playwright.
+ * Collects Jobright listings by driving hidden Electron BrowserWindows and
+ * reading the rendered DOM via webContents.executeJavaScript().
  * Session is inherited from session.defaultSession (already authenticated).
  */
 
 const { BrowserWindow } = require('electron');
+const { radiusFor } = require('../criteria');
 
 // ── Selectors (verified against live Jobright DOM 2026-04-29) ─────────────────
 const SEL_CARD      = '[class*="job-card"]';
@@ -22,16 +23,27 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
+// Hidden window used to render Jobright pages. It loads a live third-party site,
+// so it runs fully locked down: no preload, no Node, OS sandbox on, and web
+// content isolated. webContents.executeJavaScript() is unaffected by any of
+// these: it evaluates in the page's own world, and contextIsolation only
+// governs a preload script, which this window does not have.
 function makeHiddenWindow() {
   return new BrowserWindow({
     show: false,
     webPreferences: {
-      contextIsolation: false,   // allows executeJavaScript freely
+      contextIsolation: true,
       nodeIntegration:  false,
-      sandbox:          false,   // must be false for executeJavaScript to work reliably
+      sandbox:          true,
     },
   });
 }
+
+// Titles that are really HTTP/server error pages, not jobs. A gateway error
+// (502/503/504) returns an HTML page whose <h1> is the error text, which must
+// never be ingested as a role. Used as a belt-and-suspenders guard alongside
+// the HTTP status check.
+const HTTP_ERR_TITLE = /^\s*(?:\d{3}\s+)?(?:bad gateway|service (?:temporarily )?unavailable|gateway time-?out|internal server error|too many requests|forbidden|not found|service unavailable|request timeout|origin (?:error|is unreachable)|web server is (?:down|returning an unknown error)|access denied|are you a robot|just a moment|attention required)\s*$|^\s*(?:error\s+)?(?:50[0-9]|40[0-9]|429|52[0-9])\b/i;
 
 /** Poll until querySelector succeeds or timeout. */
 async function waitSelector(win, selector, timeout = 10000) {
@@ -69,47 +81,48 @@ function taxonomyUrl(title) {
 
 /**
  * Construct search passes from config.json → jobright_searches.passes.
- * Mirrors build_searches() in jobright_scraper.py.
  */
 function buildSearches(cfg, daysAgo) {
   const passes = (cfg.jobright_searches?.passes) || [];
-  const tracks = cfg.tracks || [];
 
-  // Find the first onsite/hybrid track with a target_location (for the local IRL pass)
-  const irlTrack = tracks.find(t =>
-    t.target_location &&
-    (t.work_types || []).some(w => ['Onsite', 'Hybrid'].includes(w)),
-  );
-
-  const localIrlParam = irlTrack?.target_location
-    ? '&locations=' + encodeURIComponent(JSON.stringify([{
-        city:        irlTrack.target_location,
-        radiusRange: irlTrack.target_radius_mi ?? 35,
-      }]))
-    : null;
+  // A location-based search runs once for each distinct location set on an
+  // onsite or hybrid track, with that track's commute radius.
+  const seen = new Set();
+  const localAreas = [];
+  for (const t of cfg.tracks || []) {
+    if (!t.target_location || !(t.work_types || []).some(w => ['Onsite', 'Hybrid'].includes(w))) continue;
+    const radius = radiusFor(t);
+    const key = `${t.target_location.toLowerCase()}|${radius}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    localAreas.push({
+      label: `${t.target_location} ${radius}mi`,
+      param: '&locations=' + encodeURIComponent(JSON.stringify([{ city: t.target_location, radiusRange: radius }])),
+    });
+  }
 
   const d = `&daysAgo=${daysAgo}`;
   const searches = [];
 
-  for (const p of passes) {
-    const workModel = p.work_model || 'remote';
-    if (workModel === 'local') {
-      if (!localIrlParam) continue;   // no local track configured
-      const locLabel = irlTrack.target_location +
-        (irlTrack.target_radius_mi ? ` ${irlTrack.target_radius_mi}mi` : '');
-      searches.push({
-        id:    p.id,
-        label: (p.label || '').replace('{location}', locLabel),
-        url:   BASE + taxonomyUrl(p.taxonomy || '') + d + localIrlParam,
-      });
+  passes.forEach((p, i) => {
+    const id = p.id || `search_${i + 1}`;
+    const category = p.taxonomy || '';
+    if ((p.work_model || 'remote') === 'local') {
+      for (const area of localAreas) {   // none when no track has a location
+        searches.push({
+          id:    localAreas.length > 1 ? `${id}@${area.label}` : id,
+          label: p.label ? p.label.replace('{location}', area.label) : `${category || 'Search'} near ${area.label}`,
+          url:   BASE + taxonomyUrl(category) + d + area.param,
+        });
+      }
     } else {
       searches.push({
-        id:    p.id,
-        label: p.label || 'Remote',
-        url:   BASE + taxonomyUrl(p.taxonomy || '') + d + '&workModel=2',
+        id,
+        label: p.label || `${category || 'Search'} (remote)`,
+        url:   BASE + taxonomyUrl(category) + d + '&workModel=2',
       });
     }
-  }
+  });
   return searches;
 }
 
@@ -127,7 +140,6 @@ function buildCardExcludeRe(patterns) {
 
 /**
  * Dismiss Ant Design modal overlays. Loops up to 3 times, waits 3s each.
- * Mirrors dismiss_popups() in jobright_scraper.py.
  */
 async function dismissPopups(win) {
   for (let i = 0; i < 3; i++) {
@@ -170,7 +182,6 @@ async function sortTopMatched(win) {
 /**
  * Scroll the results panel, harvest job IDs + match scores.
  * Stops when MIN_MATCH_PCT is hit three consecutive times.
- * Mirrors collect_listing_urls() in jobright_scraper.py.
  */
 async function collectListingUrls(win, minPct, seen, cardExcludeRe, scrollPauseMs, signal, passControl = null) {
   const results = [];
@@ -217,7 +228,8 @@ async function collectListingUrls(win, minPct, seen, cardExcludeRe, scrollPauseM
       });
     }
 
-    // Scroll the job list container (mirrors the Python scroll logic)
+    // Scroll the job list container, not the window: Jobright renders results
+    // in an inner scroll pane and the page body itself does not move.
     const [prevH] = await js(win, `
       (function() {
         const card = document.querySelector(${JSON.stringify(SEL_CARD)});
@@ -269,7 +281,6 @@ async function collectListingUrls(win, minPct, seen, cardExcludeRe, scrollPauseM
 
 /**
  * Navigate to a listing page and extract structured fields.
- * Mirrors extract_detail() in jobright_scraper.py.
  */
 async function extractDetail(win, item) {
   const empty = {
@@ -285,10 +296,20 @@ async function extractDetail(win, item) {
   const MAX_ATTEMPTS = 2;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
    try {
-    // loadURL resolves on did-finish-load and rejects on did-fail-load, so the
-    // load is already complete here. Readiness of SPA content is handled by the
-    // waitSelector poll below.
-    await win.loadURL(item.url);
+    // loadURL resolves on did-finish-load and rejects on did-fail-load. Crucially
+    // it does NOT reject on an HTTP 4xx/5xx response: a gateway error page loads
+    // "successfully" with the error HTML as its body. Capture the response status
+    // from did-navigate so a 5xx is treated as a failed load and retried/dropped
+    // instead of being parsed as a job titled "502 Bad Gateway".
+    let httpStatus = 0;
+    const onNav = (_e, _url, code) => { if (typeof code === 'number') httpStatus = code; };
+    win.webContents.on('did-navigate', onNav);
+    try {
+      await win.loadURL(item.url);
+    } finally {
+      win.webContents.removeListener('did-navigate', onNav);
+    }
+    if (httpStatus >= 400) throw new Error(`HTTP ${httpStatus}`);
     const h1Found = await waitSelector(win, 'h1', 12000);
     if (!h1Found) throw new Error('h1 not found');
     await sleep(300);
@@ -369,6 +390,12 @@ async function extractDetail(win, item) {
       })()
     `);
 
+    // Belt-and-suspenders: even if the status check passed (or the proxy served
+    // an error body with a 200), reject a title that is clearly an HTTP error page.
+    if (extracted.title && HTTP_ERR_TITLE.test(extracted.title)) {
+      throw new Error(`error-page title: ${extracted.title.slice(0, 40)}`);
+    }
+
     Object.assign(record, extracted);
     record.error = null;  // succeeded; clear any error from a prior attempt
 
@@ -400,7 +427,7 @@ async function extractDetail(win, item) {
 
 /**
  * Process detail pages using a pool of N hidden BrowserWindows.
- * N comes from config.settings.detail_workers (default 3).
+ * N comes from config.settings.detail_workers (default 6).
  */
 async function fetchDetailsPool(listings, nWorkers, signal, onTick, passControl = null) {
   const workers = Array.from({ length: nWorkers }, makeHiddenWindow);
@@ -435,7 +462,14 @@ async function fetchDetailsPool(listings, nWorkers, signal, onTick, passControl 
 
   await Promise.all(workers.map(workerLoop));
   if (closed) console.log(`\n    ${closed} closed listing(s) skipped`);
-  return results.filter(r => r && !r.is_closed);
+  // Drop closed listings and any record that failed to enrich (error set with no
+  // usable title or body). This prevents error-page artifacts and empty-content
+  // shells from flowing into the merge/eval as phantom roles.
+  const usable = results.filter(r =>
+    r && !r.is_closed && !(r.error && !r.title && !r.body_text && !r.responsibilities));
+  const dropped = results.filter(r => r && !r.is_closed).length - usable.length;
+  if (dropped) console.log(`\n    ${dropped} listing(s) dropped (failed to load/enrich)`);
+  return usable;
 }
 
 // ── One search pass ───────────────────────────────────────────────────────────
@@ -474,7 +508,6 @@ async function runSearch(searchCfg, minPct, scrollPauseMs, nWorkers, cardExclude
     for (const l of listings) l.search_pass = searchCfg.id;
 
     console.log(`    ${listings.length} listings -> extracting details (${nWorkers} workers)...`);
-    const total = listings.length;
     const results = await fetchDetailsPool(listings, nWorkers, signal, (done, tot, detail) => {
       process.stdout.write(`\r    [${String(done).padStart(3)}/${tot}] ${detail.jid}  `);
       if (onProgress) onProgress(`Pass ${searchCfg.label}: ${done}/${tot}`, done / tot);

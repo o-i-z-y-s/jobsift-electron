@@ -1,0 +1,66 @@
+/*
+ * ui/shared/tokens.css
+ * The single source of truth for JobSift's palette.
+ *
+ * Both pages load this file instead of defining their own :root block, so the
+ * two surfaces of the app cannot drift into slightly different colors.
+ *
+ * Add a token here rather than reaching for a hex literal in a page.
+ */
+
+:root {
+  --font:         'Segoe UI', system-ui, -apple-system, sans-serif;
+
+  /* Surfaces */
+  --bg:           #0f1117;
+  --surface:      #1a1d27;
+  --surface2:     #22263a;
+  --card:         #20232f;
+  --border:       #2e3250;
+
+  /* Text */
+  --text:         #e8eaf6;
+  --muted:        #8892b0;
+
+  /* Brand */
+  --accent:       #5b7fff;
+  --accent-hover: #8491ff;
+  --accent2:      #7c5cfc;
+
+  /* Status */
+  --danger:       #ff5e5e;
+  --green:        #4caf7d;
+
+  /* Light tints for text on a faint fill of the matching color */
+  --tint-green:   #7de8b8;
+  --tint-blue:    #8fa8ff;
+  --tint-amber:   #f5c46a;
+  --tint-sky:     #7ecbff;
+
+  /* Track badges, assigned to tracks in configured order */
+  --track-1:      var(--tint-green);
+  --track-2:      var(--tint-amber);
+  --track-3:      var(--tint-blue);
+  --track-4:      #ff9e7a;
+  --track-5:      #c4b5fd;
+  --track-6:      #f4a6c6;
+  --track-7:      #9be7ff;
+
+  /* Grades */
+  --grade-a:      #22d47a;
+  --grade-b:      #e8a0ff;
+  --grade-c:      #f5a623;
+  --grade-d:      #e05252;
+
+  /* Posting age */
+  --fresh:        #22d47a;
+  --ripe:         #5b7fff;
+  --open:         #8892b0;
+  --stale:        #f5a623;
+  --ghost:        #e05252;
+
+  /* Review flags */
+  --flag:         #f5a623;
+  --tier1:        #f5a623;
+  --tier2:        #8892b0;
+}
