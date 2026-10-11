@@ -17,7 +17,7 @@ To run a release:
 - Windows (primary target; macOS build config is included).
 
 To build:
-- Node.js and npm, only to install the pinned dependencies and to run or package the app.
+- Node.js 22.12 or newer and npm, only to install the pinned dependencies and to run or package the app.
 
 ## Getting started
 
