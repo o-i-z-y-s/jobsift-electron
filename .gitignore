@@ -7,3 +7,5 @@ out/
 Thumbs.db
 /node_modules
 /node_modules/electron
+/_diag
+/dep-audit
