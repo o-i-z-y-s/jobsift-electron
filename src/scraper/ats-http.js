@@ -2,15 +2,17 @@
 
 /**
  * src/scraper/ats-http.js
- * Target-company ATS scraper (Greenhouse, Lever, Ashby, Workday) over plain fetch().
- * Supports Greenhouse, Lever, Ashby, and Workday.
+ * Company job board scraper over plain fetch(), for the hiring systems in
+ * boards.SYSTEMS: Greenhouse, Lever, Ashby, Workday, Eightfold, Oracle, Gem,
+ * iCIMS career sites, Rippling, and Workable.
+ * Searches the boards in the config, and the boards of the user's connections'
+ * companies (see src/boards.js for how those are found).
  * Output format is identical to jobright.js so eval.js merges them cleanly.
  */
 
-const { app } = require('electron');
-const fs   = require('fs');
-const path = require('path');
-const { criteriaFromConfig } = require('../criteria');
+const { criteriaFromConfig, jobrightPlan } = require('../criteria');
+const { companyKey, companyWords } = require('../connections');
+const boards = require('../boards');
 
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
@@ -33,9 +35,13 @@ async function fetchRetry(url, opts = {}, retries = 3, abortSignal = null) {
       ? AbortSignal.any([timeoutSig, abortSignal])
       : timeoutSig;
     try {
+      // Headers a caller passes replace the default browser name. Workday
+      // answers a job search that claims to come from a browser with a web
+      // page instead of data, so the Workday and Ashby requests, which pass
+      // their own headers, go out without it.
       const r = await fetch(url, {
-        headers: { 'User-Agent': USER_AGENT, ...(opts.headers || {}) },
         ...opts,
+        headers: opts.headers || { 'User-Agent': USER_AGENT },
         signal,
       });
       if (retryOn.has(r.status)) {
@@ -316,7 +322,10 @@ function noteFailure(source, company, reason) {
   console.log(`  [${source}] ${company}: ${reason}`);
 }
 
-async function scrapeGreenhouse(company, board, titleMatches, signal = null) {
+// Each scraper calls report('ok') when the board answered and report('stale')
+// when it does not exist (404 or similar), so the known-boards file can keep
+// each board's status. A network error reports nothing.
+async function scrapeGreenhouse(company, board, titleMatches, signal = null, report = () => {}) {
   let resp;
   try {
     resp = await fetchRetry(`${GH_API}/${board}/jobs?content=true`, {}, 3, signal);
@@ -324,8 +333,9 @@ async function scrapeGreenhouse(company, board, titleMatches, signal = null) {
     noteFailure('GH', `${company} (${board})`, `network error - ${err.message}`);
     return [];
   }
-  if (resp.status === 404) { noteFailure('GH', `${company} (${board})`, 'HTTP 404 - board slug may be wrong'); return []; }
+  if (resp.status === 404) { report('stale'); noteFailure('GH', `${company} (${board})`, 'HTTP 404 - board slug may be wrong'); return []; }
   if (resp.status !== 200) { noteFailure('GH', `${company} (${board})`, `HTTP ${resp.status}`); return []; }
+  report('ok');
 
   const jobs = (await resp.json()).jobs || [];
   const matches = [];
@@ -386,7 +396,7 @@ async function scrapeGreenhouse(company, board, titleMatches, signal = null) {
 
 // ── Lever ─────────────────────────────────────────────────────────────────────
 
-async function scrapeLever(company, slug, titleMatches, signal = null) {
+async function scrapeLever(company, slug, titleMatches, signal = null, report = () => {}) {
   let resp;
   try {
     resp = await fetchRetry(`https://api.lever.co/v0/postings/${slug}?mode=json&limit=500`, {}, 3, signal);
@@ -394,8 +404,9 @@ async function scrapeLever(company, slug, titleMatches, signal = null) {
     noteFailure('LV', `${company} (${slug})`, `network error - ${err.message}`);
     return [];
   }
-  if ([404, 403].includes(resp.status)) { noteFailure('LV', `${company} (${slug})`, `HTTP ${resp.status} - board slug may be wrong`); return []; }
+  if ([404, 403].includes(resp.status)) { report('stale'); noteFailure('LV', `${company} (${slug})`, `HTTP ${resp.status} - board slug may be wrong`); return []; }
   if (resp.status !== 200) { noteFailure('LV', `${company} (${slug})`, `HTTP ${resp.status}`); return []; }
+  report('ok');
 
   const data = await resp.json();
   const jobs = Array.isArray(data) ? data : (data.data || []);
@@ -472,22 +483,28 @@ query ApiJobPosting($organizationHostedJobsPageName: String!, $jobPostingId: Str
 
 const ASHBY_NEXT_DATA_RE = /<script[^>]+id=["']__NEXT_DATA__["'][^>]*>(.*?)<\/script>/is;
 
+// Returns { postings, exists }: exists is false only when the hosted page shows
+// that no such board exists (an unknown board name is titled just "Jobs").
 async function ashbyHtmlFallback(slug) {
+  let exists = null;
   try {
     const r = await fetchRetry(`https://jobs.ashbyhq.com/${slug}`);
-    if (r.status !== 200) return [];
+    if (r.status === 404) return { postings: [], exists: false };
+    if (r.status !== 200) return { postings: [], exists };
     const text = await r.text();
+    const title = (/<title[^>]*>([^<]*)<\/title>/i.exec(text) || [, ''])[1].trim();
+    exists = !/^jobs$/i.test(title);
     const m = ASHBY_NEXT_DATA_RE.exec(text);
-    if (!m) return [];
+    if (!m) return { postings: [], exists };
     const data = JSON.parse(m[1]);
     const pp = data?.props?.pageProps || {};
     for (const key of ['jobBoardWithTeams', 'jobBoard', 'board', 'jobPostings']) {
       const node = pp[key];
-      if (Array.isArray(node) && node.length) return node;
+      if (Array.isArray(node) && node.length) return { postings: node, exists };
       if (node && typeof node === 'object') {
         for (const sub of ['jobPostings', 'jobs']) {
           const postings = node[sub];
-          if (Array.isArray(postings) && postings.length) return postings;
+          if (Array.isArray(postings) && postings.length) return { postings, exists };
         }
       }
     }
@@ -504,13 +521,14 @@ async function ashbyHtmlFallback(slug) {
       }
       return [];
     }
-    return findPostings(pp);
-  } catch { return []; }
+    return { postings: findPostings(pp), exists };
+  } catch { return { postings: [], exists }; }
 }
 
-async function scrapeAshby(company, slug, titleMatches, signal = null) {
+async function scrapeAshby(company, slug, titleMatches, signal = null, report = () => {}) {
   let postings = [];
   let usedFallback = false;
+  let boardFound = false;
 
   try {
     const r = await fetchRetry(ASHBY_GQL + '?op=ApiJobBoardWithTeams', {
@@ -525,6 +543,7 @@ async function scrapeAshby(company, slug, titleMatches, signal = null) {
     const gql = await r.json();
     const boardNode = gql?.data?.jobBoardWithTeams;
     if (boardNode) {
+      boardFound = true;
       postings = boardNode.jobPostings || [];
     } else {
       const errs = (gql?.errors || []).map(e => e.message).join('; ');
@@ -534,9 +553,13 @@ async function scrapeAshby(company, slug, titleMatches, signal = null) {
     console.log(`  [AS] ${company} (${slug}): GraphQL error - ${err.message}`);
   }
 
+  if (boardFound) report('ok');
   if (!postings.length) {
-    postings = await ashbyHtmlFallback(slug);
+    const fallback = await ashbyHtmlFallback(slug);
+    postings = fallback.postings;
     usedFallback = !!postings.length;
+    if (!boardFound && (usedFallback || fallback.exists)) report('ok');
+    if (!boardFound && fallback.exists === false) report('stale');
     if (usedFallback) {
       console.log(`  [AS] ${company} (${slug}): GraphQL 0; HTML fallback found ${postings.length}`);
     } else {
@@ -613,9 +636,6 @@ async function scrapeAshby(company, slug, titleMatches, signal = null) {
 }
 
 // ── Workday ───────────────────────────────────────────────────────────────────
-
-const WD_BASE_RE = /(https?:\/\/([a-z0-9][a-z0-9_-]*)\.wd\d+\.myworkdayjobs\.com)/i;
-const WD_SITE_RE = /\/(?:en[-_][A-Z]{2}|en)\/([A-Za-z0-9][A-Za-z0-9_%-]*)/;
 
 const WD_DESC_PATHS = [
   [['jobPostingInfo'], 'jobDescription'],
@@ -700,6 +720,12 @@ function parseWdHtml(htmlText) {
   return {};
 }
 
+// Where a Workday board's pages live: after the site name on a company's own
+// Workday host, after recruiting/{tenant}/ on the shared myworkdaysite.com host.
+function wdSitePath(baseUrl, tenant, site) {
+  return /\.myworkdaysite\.com$/i.test(new URL(baseUrl).hostname) ? `recruiting/${tenant}/${site}` : site;
+}
+
 async function fetchWdDescription(baseUrl, tenant, site, jobId, extPath, signal = null) {
   const detailUrl = `${baseUrl}/wday/cxs/${tenant}/${site}/jobs/${jobId}`;
   for (const [method, extra] of [
@@ -718,7 +744,7 @@ async function fetchWdDescription(baseUrl, tenant, site, jobId, extPath, signal 
       }
     } catch { /* try next */ }
   }
-  const pageUrl = `${baseUrl}/en-US/${site}${extPath}`;
+  const pageUrl = `${baseUrl}/en-US/${wdSitePath(baseUrl, tenant, site)}${extPath}`;
   try {
     const r = await fetchRetry(pageUrl, {}, 3, signal);
     if (r.status === 200) {
@@ -729,7 +755,7 @@ async function fetchWdDescription(baseUrl, tenant, site, jobId, extPath, signal 
   return {};
 }
 
-async function scrapeWorkday(company, baseUrl, tenant, site, searchTerms, titleMatches, signal = null) {
+async function scrapeWorkday(company, baseUrl, tenant, site, searchTerms, titleMatches, signal = null, report = () => {}) {
   const searchUrl = `${baseUrl}/wday/cxs/${tenant}/${site}/jobs`;
   const allJobs   = [];
 
@@ -749,10 +775,12 @@ async function scrapeWorkday(company, baseUrl, tenant, site, searchTerms, titleM
         break;
       }
       if ([403, 404, 422].includes(r.status)) {
+        report('stale');
         noteFailure('WD', `${company} (${tenant}/${site})`, `HTTP ${r.status} - site slug may be wrong`);
         return [];
       }
       if (r.status !== 200) { noteFailure('WD', company, `HTTP ${r.status}`); break; }
+      report('ok');
 
       let data;
       try { data = await r.json(); }
@@ -787,7 +815,7 @@ async function scrapeWorkday(company, baseUrl, tenant, site, searchTerms, titleM
 
     const extPath = job.externalPath || '';
     const jobId   = wdJobId(extPath);
-    const jobUrl  = extPath ? `${baseUrl}/en-US/${site}${extPath}` : '';
+    const jobUrl  = extPath ? `${baseUrl}/en-US/${wdSitePath(baseUrl, tenant, site)}${extPath}` : '';
     const locName = job.locationsText || '';
     const wt      = normalizeWorkType(locName);
     const sp      = searchPass(locName, wt);
@@ -848,137 +876,478 @@ function hashCode(s) {
   return h;
 }
 
-// Workday URL auto-discovery
-async function discoverWorkdayUrl(company, hintUrl, signal = null) {
-  try {
-    const r = await fetchRetry(hintUrl, { redirect: 'follow' }, 3, signal);
-    const searchText = r.url + '\n' + (await r.text()).slice(0, 200000);
-    const bm = WD_BASE_RE.exec(searchText);
-    if (!bm) { console.log(`  [WD-discover] ${company}: no Workday URL found`); return null; }
-    const baseUrl = bm[1], tenant = bm[2];
-    const context = searchText.slice(bm.index, bm.index + 600);
-    const sm = WD_SITE_RE.exec(context);
-    const site = sm ? sm[1] : tenant;
-    if (!sm) console.log(`  [WD-discover] ${company}: site slug not found, defaulting to '${tenant}'`);
-    return { base_url: baseUrl, tenant, site };
-  } catch (err) {
-    noteFailure('WD-discover', company, `fetch error - ${err.message}`);
-    return null;
-  }
+// ── Shared helpers for the systems below ─────────────────────────────────────
+
+// One posting in the record format the other scrapers build by hand. text is
+// the description as plain text; salary, when not given, is read from it.
+function atsRecord({ jid, company, title, location = '', workType = '', text = '', salary = '', url, employmentType = '' }) {
+  const [resp_, req_, pref_] = splitDescription(text);
+  const wt = workType || normalizeWorkType(location);
+  return {
+    jid,
+    ...(employmentType ? { employment_type: employmentType } : {}),
+    url,
+    match_pct:        100,
+    card_text:        `Direct ATS - ${company}`,
+    company,
+    title,
+    location,
+    work_type:        wt || 'Unknown',
+    salary:           salary || extractSalary(text) || amountsToSalary(collectAmounts(text)),
+    responsibilities: resp_.slice(0, 2500),
+    required_quals:   req_.slice(0, 2500),
+    preferred_quals:  pref_.slice(0, 2000),
+    ats_url:          url,
+    error:            text ? null : 'description_unavailable',
+    search_pass:      searchPass(location, wt),
+  };
 }
 
-// Workday URL cache
-function wdCachePath() {
-  return path.join(app.getPath('userData'), 'workday_urls_cache.json');
+// GET a URL as JSON. Throws an Error with .status when the answer is not a
+// 200 with a JSON body, so callers can tell a missing board (404) from the rest.
+async function getJson(url, signal) {
+  const r = await fetchRetry(url, { headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' } }, 3, signal);
+  const data = r.status === 200 ? await r.json().catch(() => null) : null;
+  if (data == null) { const err = new Error(`HTTP ${r.status}`); err.status = r.status; throw err; }
+  return data;
 }
-function loadWdCache() {
+
+// What a scraper does when its board's list cannot be read: a board that no
+// longer exists is reported stale; anything else is only noted.
+const GONE = new Set([400, 403, 404, 410]);
+function boardError(tag, label, err, report) {
+  if (GONE.has(err.status)) { report('stale'); noteFailure(tag, label, `HTTP ${err.status} - board may have moved`); }
+  else noteFailure(tag, label, err.status ? `HTTP ${err.status}` : `network error - ${err.message}`);
+}
+
+// Boards searched once per title, like Workday, because their lists are too
+// large to read whole. Results come most relevant first, so a title's search
+// stops after DRY_PAGES pages in a row with no matching title.
+const SEARCHED_BY_TERM = new Set(['workday', 'eightfold', 'oracle']);
+const DRY_PAGES = 3;
+const MAX_PAGES = 30;
+
+// fetchPage(term, page) -> { items, more }. Returns the matching items, each
+// once, in the order found.
+async function searchByTerms(terms, fetchPage, { idOf, titleOf, titleMatches, signal }) {
+  const found = new Map();
+  for (const term of terms) {
+    let dry = 0;
+    for (let page = 0; page < MAX_PAGES && dry < DRY_PAGES; page++) {
+      if (signal?.aborted) return [...found.values()];
+      const { items, more } = await fetchPage(term, page);
+      let hit = false;
+      for (const it of items) {
+        if (!titleMatches(titleOf(it))) continue;
+        hit = true;
+        if (!found.has(idOf(it))) found.set(idOf(it), it);
+      }
+      dry = hit ? 0 : dry + 1;
+      if (!more || !items.length) break;
+      await sleep(300);
+    }
+  }
+  return [...found.values()];
+}
+
+// The detail of each matching posting, one request at a time; a failed one
+// leaves that posting without a description rather than dropping it.
+async function withDetails(items, getDetail, signal) {
+  const out = [];
+  for (const it of items) {
+    if (signal?.aborted) break;
+    let detail = null;
+    try { detail = await getDetail(it); } catch { /* kept without a description */ }
+    out.push([it, detail]);
+    await sleep(300);
+  }
+  return out;
+}
+
+// A pay range given as data rather than text: every amount of 10,000 or more
+// found in it, lowest to highest.
+function payRange(data) {
+  const nums = (JSON.stringify(data || '').match(/\d{5,}(?:\.\d+)?/g) || []).map(Number).filter(n => n >= 10000 && n < 10000000);
+  return amountsToSalary([...new Set(nums.map(Math.round))].sort((a, b) => a - b));
+}
+
+const workTypeWord = v => {
+  const s = String(v || '').toLowerCase();
+  return /remote/.test(s) ? 'Remote' : /hybrid/.test(s) ? 'Hybrid' : /on.?site|office|in.?person/.test(s) ? 'Onsite' : '';
+};
+
+// ── Gem ───────────────────────────────────────────────────────────────────────
+// api.gem.com/job_board/v0/{board}/job_posts/: every posting, with its text.
+
+async function scrapeGem(company, { slug }, { titleMatches, signal, report }) {
+  const label = `${company} (${slug})`;
+  let posts;
+  try { posts = await getJson(`https://api.gem.com/job_board/v0/${encodeURIComponent(slug)}/job_posts/`, signal); }
+  catch (err) { boardError('GM', label, err, report); return []; }
+  report('ok');
+  const list = Array.isArray(posts) ? posts : [];
+  const matches = list.filter(p => titleMatches(p.title || '')).map(p => atsRecord({
+    jid: `ats_gm_${p.id}`, company, title: p.title || '',
+    location: p.location?.name || (p.offices || []).map(o => o.location?.name || o.name).filter(Boolean).join('; '),
+    workType: workTypeWord(p.location_type),
+    text: p.content_plain || stripHtml(p.content || ''),
+    url: p.absolute_url || `https://jobs.gem.com/${slug}/${p.id}`,
+    employmentType: p.employment_type || '',
+  }));
+  console.log(`  [GM] ${label}: ${list.length} postings -> ${matches.length} matches`);
+  return matches;
+}
+
+// ── Rippling ──────────────────────────────────────────────────────────────────
+// api.rippling.com/platform/api/ats/v1/board/{board}/jobs: titles only; each
+// matching posting's text is one more request.
+
+async function scrapeRippling(company, { slug }, { titleMatches, signal, report }) {
+  const label = `${company} (${slug})`;
+  const api = `https://api.rippling.com/platform/api/ats/v1/board/${encodeURIComponent(slug)}/jobs`;
+  let list;
+  try { list = await getJson(api, signal); }
+  catch (err) { boardError('RP', label, err, report); return []; }
+  report('ok');
+  list = Array.isArray(list) ? list : [];
+  const wanted = list.filter(j => titleMatches(j.name || ''));
+  const detailed = await withDetails(wanted, j => getJson(`${api}/${encodeURIComponent(j.uuid)}`, signal), signal);
+  const matches = detailed.map(([j, d]) => {
+    const desc = d?.description || {};
+    const text = [desc.role, desc.company].filter(Boolean).map(stripHtml).join('\n');
+    const places = (d?.workLocations || []).map(w => (typeof w === 'string' ? w : w?.label || w?.name)).filter(Boolean);
+    const location = j.workLocation?.label || places.join('; ');
+    return atsRecord({
+      jid: `ats_rp_${j.uuid}`, company, title: j.name || '', location,
+      workType: workTypeWord(location),
+      text, salary: payRange(d?.payRangeDetails),
+      url: j.url || `https://ats.rippling.com/${slug}/jobs/${j.uuid}`,
+      employmentType: typeof d?.employmentType === 'string' ? d.employmentType : d?.employmentType?.label || '',
+    });
+  });
+  console.log(`  [RP] ${label}: ${list.length} postings -> ${matches.length} matches`);
+  return matches;
+}
+
+// ── Workable ──────────────────────────────────────────────────────────────────
+// apply.workable.com/api/v1/widget/accounts/{board}?details=true: every
+// posting, with its text.
+
+async function scrapeWorkable(company, { slug }, { titleMatches, signal, report }) {
+  const label = `${company} (${slug})`;
+  let data;
+  try { data = await getJson(`https://apply.workable.com/api/v1/widget/accounts/${encodeURIComponent(slug)}?details=true`, signal); }
+  catch (err) { boardError('WK', label, err, report); return []; }
+  report('ok');
+  const list = Array.isArray(data.jobs) ? data.jobs : [];
+  const matches = list.filter(j => titleMatches(j.title || '')).map(j => {
+    const location = [j.city, j.state, j.country].filter(Boolean).join(', ');
+    return atsRecord({
+      jid: `ats_wk_${j.shortcode}`, company, title: j.title || '', location,
+      workType: j.telecommuting ? 'Remote' : workTypeWord(j.workplace),
+      text: stripHtml([j.description, j.requirements, j.benefits].filter(Boolean).join('\n')),
+      url: j.url || j.shortlink || `https://apply.workable.com/${slug}/j/${j.shortcode}/`,
+      employmentType: j.employment_type || '',
+    });
+  });
+  console.log(`  [WK] ${label}: ${list.length} postings -> ${matches.length} matches`);
+  return matches;
+}
+
+// ── iCIMS career sites ────────────────────────────────────────────────────────
+// {site}/api/jobs?page={n}&limit=100: every posting, with its text, a page at
+// a time. Its keyword search matches loosely, so the whole list is read.
+
+const ICIMS_PAGE = 100;
+const ICIMS_MAX_PAGES = 50;
+
+async function scrapeIcims(company, { base_url }, { titleMatches, signal, report }) {
+  const host = new URL(base_url).hostname;
+  const label = `${company} (${host})`;
+  const jobs = [];
+  for (let page = 1; page <= ICIMS_MAX_PAGES; page++) {
+    if (signal?.aborted) break;
+    let data;
+    try { data = await getJson(`${base_url}/api/jobs?page=${page}&limit=${ICIMS_PAGE}`, signal); }
+    catch (err) { if (page === 1) { boardError('IC', label, err, report); return []; } break; }
+    if (page === 1) report('ok');
+    const batch = (Array.isArray(data.jobs) ? data.jobs : []).map(j => j.data || j);
+    jobs.push(...batch);
+    if (!batch.length || jobs.length >= (data.totalCount || 0)) break;
+    await sleep(300);
+  }
+  const matches = jobs.filter(j => titleMatches(j.title || '')).map(j => {
+    const id = j.req_id || j.slug;
+    const location = j.full_location || j.location_name || [j.city, j.state, j.country].filter(Boolean).join(', ');
+    const lo = Number(j.salary_min_value) || 0, hi = Number(j.salary_max_value) || 0;
+    return atsRecord({
+      jid: `ats_ic_${host}_${id}`, company, title: j.title || '', location,
+      text: stripHtml([j.description, j.responsibilities, j.qualifications].filter(Boolean).join('\n')),
+      salary: lo >= 10000 || hi >= 10000 ? amountsToSalary([lo, hi].filter(n => n >= 10000)) : '',
+      url: `${base_url}/jobs/${j.slug || id}`,
+      employmentType: j.employment_type || '',
+    });
+  });
+  console.log(`  [IC] ${label}: ${jobs.length} postings -> ${matches.length} matches`);
+  return matches;
+}
+
+// ── Eightfold ─────────────────────────────────────────────────────────────────
+// Ten postings a page, without text; each match's text is one more request.
+// Two layouts: the older {site}/api/apply/v2/jobs?domain=&query=&start=&num=10
+// with {site}/api/apply/v2/jobs/{id}, and the newer (PCSX)
+// {site}/api/pcsx/search?domain=&query=&location=&start= with
+// {site}/api/pcsx/position_details?position_id=&domain=. A site on the newer
+// one refuses the older list with HTTP 403, so the newer is used from then on.
+
+async function scrapeEightfold(company, { base_url, domain }, { terms, titleMatches, signal, report }) {
+  const label = `${company} (${new URL(base_url).hostname})`;
+  const d = encodeURIComponent(domain);
+  let newer = false;
+  const page = async (term, n) => {
+    const q = encodeURIComponent(term);
+    if (!newer) {
+      try {
+        const data = await getJson(`${base_url}/api/apply/v2/jobs?domain=${d}&query=${q}&start=${n * 10}&num=10`, signal);
+        const items = Array.isArray(data.positions) ? data.positions : [];
+        return { items, more: n * 10 + items.length < (data.count || 0) };
+      } catch (err) { if (err.status !== 403) throw err; newer = true; }
+    }
+    const data = (await getJson(`${base_url}/api/pcsx/search?domain=${d}&query=${q}&location=&start=${n * 10}`, signal)).data || {};
+    const items = Array.isArray(data.positions) ? data.positions : [];
+    return { items, more: n * 10 + items.length < (data.count || 0) };
+  };
+  let found;
   try {
-    const p = wdCachePath();
-    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'));
-  } catch { /* ignore */ }
-  return {};
+    found = await searchByTerms(terms, async (term, n) => { const r = await page(term, n); report('ok'); return r; },
+      { idOf: p => p.id, titleOf: p => p.name || p.posting_name || '', titleMatches, signal });
+  } catch (err) { boardError('EF', label, err, report); return []; }
+  const detail = p => (newer
+    ? getJson(`${base_url}/api/pcsx/position_details?position_id=${encodeURIComponent(p.id)}&domain=${d}&hl=en`, signal).then(r => r.data || {})
+    : getJson(`${base_url}/api/apply/v2/jobs/${p.id}?domain=${d}`, signal));
+  const detailed = await withDetails(found, detail, signal);
+  const matches = detailed.map(([p, full]) => {
+    const location = p.location || full?.location || (p.locations || []).filter(x => typeof x === 'string').join('; ');
+    return atsRecord({
+      jid: `ats_ef_${p.id}`, company, title: p.name || p.posting_name || '', location,
+      workType: workTypeWord(p.work_location_option || p.workLocationOption || full?.work_location_option || full?.workLocationOption),
+      text: stripHtml(full?.job_description || full?.jobDescription || p.job_description || ''),
+      url: p.canonicalPositionUrl || full?.publicUrl || p.publicUrl ||
+           (p.positionUrl ? `${base_url}${p.positionUrl}` : `${base_url}/careers/job/${p.id}`),
+      employmentType: p.type || '',
+    });
+  });
+  console.log(`  [EF] ${label}: ${found.length} matches`);
+  return matches;
 }
-function saveWdCache(cache) {
-  try { fs.writeFileSync(wdCachePath(), JSON.stringify(cache, null, 2), 'utf8'); } catch { /* ignore */ }
+
+// ── Oracle Recruiting Cloud ───────────────────────────────────────────────────
+// {site}/hcmRestApi/resources/latest/recruitingCEJobRequisitions, searched by
+// keyword 25 at a time, with a short summary; each match's full text is one
+// more request to recruitingCEJobRequisitionDetails.
+
+const ORACLE_PAGE = 25;
+const oracleFinder = parts => encodeURIComponent(parts.join(','));
+
+async function scrapeOracle(company, { base_url, site }, { terms, titleMatches, signal, report }) {
+  const host = new URL(base_url).hostname;
+  const label = `${company} (${host}/${site})`;
+  const api = `${base_url}/hcmRestApi/resources/latest`;
+  let found;
+  try {
+    found = await searchByTerms(terms, async (term, page) => {
+      // The finder's own separators are commas and semicolons.
+      const keyword = term.replace(/[,;="]/g, ' ').trim();
+      const finder = oracleFinder([`findReqs;siteNumber=${site}`, `keyword=${keyword}`, `limit=${ORACLE_PAGE}`, `offset=${page * ORACLE_PAGE}`]);
+      const data = await getJson(`${api}/recruitingCEJobRequisitions?onlyData=true&expand=requisitionList.secondaryLocations&finder=${finder}`, signal);
+      report('ok');
+      const node = (data.items || [])[0] || {};
+      const items = Array.isArray(node.requisitionList) ? node.requisitionList : [];
+      return { items, more: page * ORACLE_PAGE + items.length < (node.TotalJobsCount || 0) };
+    }, { idOf: r => r.Id, titleOf: r => r.Title || '', titleMatches, signal });
+  } catch (err) { boardError('OR', label, err, report); return []; }
+  const detailed = await withDetails(found, async r => {
+    const finder = oracleFinder([`ById;Id="${r.Id}"`, `siteNumber=${site}`]);
+    const data = await getJson(`${api}/recruitingCEJobRequisitionDetails?expand=all&onlyData=true&finder=${finder}`, signal);
+    return (data.items || [])[0] || null;
+  }, signal);
+  const matches = detailed.map(([r, full]) => {
+    const places = [r.PrimaryLocation, ...(r.secondaryLocations || []).map(l => l.Name)].filter(Boolean);
+    const text = full
+      ? stripHtml([full.ExternalDescriptionStr, full.ExternalResponsibilitiesStr, full.ExternalQualificationsStr].filter(Boolean).join('\n'))
+      : stripHtml(r.ShortDescriptionStr || '');
+    return atsRecord({
+      jid: `ats_or_${host}_${r.Id}`, company, title: r.Title || '', location: [...new Set(places)].join('; '),
+      workType: workTypeWord(r.WorkplaceType || full?.WorkplaceType || r.WorkplaceTypeCode),
+      text,
+      url: `${base_url}/hcmUI/CandidateExperience/en/sites/${site}/job/${r.Id}`,
+      employmentType: r.JobSchedule || r.WorkerType || '',
+    });
+  });
+  console.log(`  [OR] ${label}: ${found.length} matches`);
+  return matches;
+}
+
+// Each system's scraper, in the order boards are searched:
+// (company, board, { terms, titleMatches, signal, report }) -> records.
+const SCRAPERS = {
+  greenhouse: (c, b, x) => scrapeGreenhouse(c, b.slug, x.titleMatches, x.signal, x.report),
+  lever:      (c, b, x) => scrapeLever(c, b.slug, x.titleMatches, x.signal, x.report),
+  ashby:      (c, b, x) => scrapeAshby(c, b.slug, x.titleMatches, x.signal, x.report),
+  workday:    (c, b, x) => scrapeWorkday(c, b.base_url, b.tenant, b.site, x.terms, x.titleMatches, x.signal, x.report),
+  eightfold:  scrapeEightfold,
+  oracle:     scrapeOracle,
+  gem:        scrapeGem,
+  icims:      scrapeIcims,
+  rippling:   scrapeRippling,
+  workable:   scrapeWorkable,
+};
+
+// ── Shared boards ─────────────────────────────────────────────────────────────
+
+// A company's name as a whole phrase, for finding it in a posting.
+function nameRe(company) {
+  const words = companyWords(company);
+  if (words.join('').length < 3) return null;
+  return new RegExp(`\\b${words.join('[\\s\\W]*')}\\b`, 'i');
+}
+
+/**
+ * The roles from a board shared with another company, sorted out: a role that
+ * names one of the sharing companies in its title or description is labeled
+ * as that company's, and the company is recorded in kb as confirmed on this
+ * board. The rest stay with the board's own company, or are dropped when the
+ * board was searched only for the sharing companies.
+ */
+function sharedRoles(results, target, kb) {
+  const sharers = target.sharedBy.map(c => ({ company: c, re: nameRe(c) })).filter(s => s.re);
+  const confirmed = new Set();
+  const out = [];
+  for (const r of results) {
+    const text = [r.title, r.responsibilities, r.required_quals, r.preferred_quals].join(' ');
+    const hit = sharers.find(s => s.re.test(text));
+    if (hit) {
+      confirmed.add(hit.company);
+      out.push({ ...r, company: hit.company, card_text: `Direct ATS - ${hit.company}` });
+    } else if (target.company) {
+      out.push(r);
+    }
+  }
+  const now = new Date().toISOString();
+  for (const c of confirmed) kb.note(c, { shared: { ats: target.ats, board: target.board, confirmed_at: now } });
+  return out;
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
 /**
- * run({ cfg, signal, onProgress }) -> Array of job records
- * cfg is the parsed config.json object.
+ * run({ cfg, kb, connectionCompanies, signal, onProgress, onChecked }) -> Array of job records
+ *   cfg                  the parsed config.json object
+ *   kb                   the known boards (boards.KnownBoards); updated with
+ *                        each board's status, saved by the caller
+ *   connectionCompanies  the connections' companies, most connections first
+ *                        (connections.companiesByCount), or [] when none are
+ *                        imported or searching them is turned off
+ *   onChecked(company)   after each of those companies is looked up
+ *   onProgress(message, share)  share is how far the run is, 0 to 1: looking
+ *                        up the connections' companies' boards fills the first
+ *                        half when any are looked up, searching the boards the rest
  */
-async function run({ cfg, signal, onProgress }) {
+async function run({ cfg, kb, connectionCompanies = [], signal, onProgress, onChecked }) {
   const emit = (msg, pct) => { if (onProgress) onProgress(msg, pct); };
   boardFailures.length = 0;
 
   const atsBoards     = cfg.ats_boards || {};
   const titleFilters  = cfg.title_filters || {};
-  const GREENHOUSE    = atsBoards.greenhouse     || {};
-  const LEVER         = atsBoards.lever          || {};
-  const ASHBY         = atsBoards.ashby          || {};
-  const WD_DIRECT     = atsBoards.workday_direct || {};
-  const WD_COMPANIES  = atsBoards.workday_companies || {};
+  const conn          = cfg.connections || {};
+  const recheckDays   = Math.max(1, Number(conn.recheck_days ?? boards.DEFAULT_RECHECK_DAYS) || boards.DEFAULT_RECHECK_DAYS);
   const crit          = criteriaFromConfig(cfg);
-  // Workday boards are searched by keyword. With no terms set, they are
-  // searched for the Ideal and Good roles (or every role, if none are).
-  const topRoles      = crit.roles.filter(r => r.priority !== 'acceptable').map(r => r.title);
-  const WD_TERMS      = (atsBoards.workday_search_terms || []).length ? atsBoards.workday_search_terms
-                      : topRoles.length ? topRoles : crit.roles.map(r => r.title);
+  // Workday, Eightfold, and Oracle boards are searched by keyword: the same
+  // titles Jobright is searched for.
+  const WD_TERMS      = jobrightPlan(cfg).titles;
   const titleMatches  = buildTitleFilter(
     crit.roles,
     titleFilters.title_block   || [],
   );
 
-  const allFound = [];
-  const companies = Object.keys(GREENHOUSE).length +
-                    Object.keys(LEVER).length +
-                    Object.keys(ASHBY).length +
-                    Object.keys(WD_DIRECT).length +
-                    Object.keys(WD_COMPANIES).length;
-  let done = 0;
-  const tick = (msg) => { emit(msg, ++done / companies); };
-
-  // ── Greenhouse ──────────────────────────────────────────────────────────────
-  console.log('\n-- Greenhouse boards --');
-  for (const [company, board] of Object.entries(GREENHOUSE)) {
-    if (signal?.aborted) break;
-    const results = await scrapeGreenhouse(company, board, titleMatches, signal);
-    allFound.push(...results);
-    tick(`Greenhouse · ${company}: +${results.length} (${allFound.length} ATS roles so far)`);
-    await sleep(500);
-  }
-
-  // ── Lever ───────────────────────────────────────────────────────────────────
-  console.log('\n-- Lever boards --');
-  for (const [company, slug] of Object.entries(LEVER)) {
-    if (signal?.aborted) break;
-    const results = await scrapeLever(company, slug, titleMatches, signal);
-    allFound.push(...results);
-    tick(`Lever · ${company}: +${results.length} (${allFound.length} ATS roles so far)`);
-    await sleep(500);
-  }
-
-  // ── Ashby ───────────────────────────────────────────────────────────────────
-  console.log('\n-- Ashby boards --');
-  for (const [company, slug] of Object.entries(ASHBY)) {
-    if (signal?.aborted) break;
-    const results = await scrapeAshby(company, slug, titleMatches, signal);
-    allFound.push(...results);
-    tick(`Ashby · ${company}: +${results.length} (${allFound.length} ATS roles so far)`);
-    await sleep(500);
-  }
-
-  // ── Workday ─────────────────────────────────────────────────────────────────
-  const wdCache = loadWdCache();
-
-  for (const [company, info] of Object.entries(WD_DIRECT)) {
-    if (!wdCache[company]) wdCache[company] = info;
-  }
-  const wdResolved = [...Object.entries(WD_DIRECT).map(([c]) => [c, wdCache[c]])];
-
-  for (const [company, hintUrl] of Object.entries(WD_COMPANIES)) {
-    if (signal?.aborted) break;
-    if (wdCache[company]) {
-      wdResolved.push([company, wdCache[company]]);
-    } else {
-      const info = await discoverWorkdayUrl(company, hintUrl, signal);
-      if (info) { wdCache[company] = info; wdResolved.push([company, info]); }
-      await sleep(1000);
+  // ── Boards to search ────────────────────────────────────────────────────────
+  // The user's own companies first, as entered; then the connections' companies.
+  // A board is searched once per run, under the first company it was added for.
+  // A connection's company whose apply links lead to a board that may be
+  // another company's shares that board: only the board's roles that name the
+  // company are kept for it (see sharedRoles).
+  const targets = [];
+  const byBoard = new Map();
+  const targetFor = (company, ats, board) => {
+    const id = `${ats}:${boards.boardId(ats, board).toLowerCase()}`;
+    if (!byBoard.has(id)) {
+      const t = { company, ats, board, sharedBy: [] };
+      byBoard.set(id, t);
+      targets.push(t);
     }
+    return byBoard.get(id);
+  };
+  const add = (company, ats, board) => {
+    const t = targetFor(company, ats, board);
+    if (t.company == null) t.company = company;   // a board added as shared takes its first owner
+  };
+  const addShared = (company, ats, board) => targetFor(null, ats, board).sharedBy.push(company);
+
+  for (const { company, ats, board } of boards.boardsFromConfig(atsBoards)) add(company, ats, board);
+
+  // Companies entered with only a careers page link: the board is found by
+  // scanning the page once, then remembered in the known-boards file.
+  for (const [company, careersUrl] of Object.entries(atsBoards.workday_companies || {})) {
+    if (signal?.aborted) break;
+    const known = kb.get(company);
+    if (known && known.status === 'ok' && known.board) { add(company, known.ats, known.board); continue; }
+    if (!String(careersUrl || '').trim() || !kb.isDue(company)) continue;
+    emit(`Finding the job board for ${company} from its careers page`, 0);
+    try {
+      const res = await boards.lookup(company, kb, { careersUrl, recheckDays, signal });
+      if (res.found) add(company, res.entry.ats, res.entry.board);
+      else console.log(`  [discover] ${company}: no public job board found on the careers page`);
+    } catch { break; }   // canceled
   }
 
-  saveWdCache(wdCache);
+  let searchFrom = 0;   // the share of progress the lookups below take
+  if (connectionCompanies.length) {
+    const own = new Set([...targets.map(t => companyKey(t.company)),
+                         ...Object.keys(atsBoards.workday_companies || {}).map(companyKey)]);
+    const res = await boards.checkCompanies(kb, connectionCompanies, {
+      skip: own, recheckDays, signal, onChecked,
+      onProgress: (n, total) => emit(`Looking up job boards for your connections' companies: ${n} of ${total}`, (n - 1) / total / 2),
+    });
+    if (res.looked) searchFrom = 0.5;
+    for (const b of res.own) add(b.company, b.ats, b.board);
+    for (const b of res.shared) addShared(b.company, b.ats, b.board);
+    emit(`Searching the job boards of ${res.own.length} of your connections' companies.` +
+         (res.looked ? ` Looked for ${res.looked} more and found ${res.found}.` : '') +
+         (res.shared.length ? ` Checking ${res.shared.length} boards shared with another company for roles that name them.` : ''), searchFrom);
+  }
 
-  console.log('\n-- Workday --');
-  for (const [company, info] of wdResolved) {
-    if (signal?.aborted) break;
-    const results = await scrapeWorkday(
-      company, info.base_url, info.tenant, info.site, WD_TERMS, titleMatches, signal,
-    );
-    allFound.push(...results);
-    tick(`Workday · ${company}: +${results.length} (${allFound.length} ATS roles so far)`);
-    await sleep(1000);
+  // ── Search ──────────────────────────────────────────────────────────────────
+  const allFound = [];
+  let done = 0;
+  const tick = (msg) => { emit(msg, searchFrom + (1 - searchFrom) * (++done / (targets.length || 1))); };
+  const LABEL = boards.SYSTEMS;
+
+  for (const ats of Object.keys(SCRAPERS)) {
+    const group = targets.filter(t => t.ats === ats);
+    if (group.length) console.log(`\n-- ${LABEL[ats]} boards --`);
+    for (const t of group) {
+      if (signal?.aborted) break;
+      let outcome = null;
+      const report = o => { outcome = o; };
+      const b = t.board;
+      const name = t.company || `${LABEL[ats]} board ${boards.boardId(ats, b)}`;
+      let results = await SCRAPERS[ats](name, b, { terms: WD_TERMS, titleMatches, signal, report });
+      if (outcome) for (const c of [t.company, ...t.sharedBy].filter(Boolean)) kb.markSearched(c, ats, b, outcome);
+      if (t.sharedBy.length) results = sharedRoles(results, t, kb);
+      allFound.push(...results);
+      tick(`${LABEL[ats]} · ${name}: +${results.length} (${allFound.length} ATS roles so far)`);
+      await sleep(SEARCHED_BY_TERM.has(ats) ? 1000 : 500);
+    }
   }
 
   // Dedup by ATS URL within this run
@@ -989,7 +1358,7 @@ async function run({ cfg, signal, onProgress }) {
     if (!seenUrls.has(key)) { seenUrls.add(key); deduped.push(r); }
   }
 
-  console.log(`\n  ATS done - ${deduped.length} unique roles from ${Object.keys(GREENHOUSE).length + Object.keys(LEVER).length + Object.keys(ASHBY).length + wdResolved.length} companies`);
+  console.log(`\n  ATS done - ${deduped.length} unique roles from ${targets.length} companies`);
 
   // Surface unreachable boards in the run feed. Without this a dead board slug
   // is silently worth zero roles and reads as a quiet market.

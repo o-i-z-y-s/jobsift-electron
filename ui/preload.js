@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadConfig: () => ipcRenderer.invoke('config:load'),
   saveConfig: (config) => ipcRenderer.invoke('config:save', config),
   getScoringRules: () => ipcRenderer.invoke('config:rules'),
+  getJobrightPlan: (config) => ipcRenderer.invoke('config:jobrightPlan', config),
 
   // ── Scrape lifecycle ────────────────────────────────────────────────────────
   startScrape:  (options) => ipcRenderer.invoke('scrape:start', options),
@@ -48,6 +49,32 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listResults:     ()       => ipcRenderer.invoke('results:list'),
   loadResult:      (fpath)  => ipcRenderer.invoke('results:load', fpath),
   deleteResult:    (fpath)  => ipcRenderer.invoke('results:delete', fpath),
+
+  // ── Connections ─────────────────────────────────────────────────────────────
+  importConnections:      ()          => ipcRenderer.invoke('connections:import'),
+  importConnectionsText:  (text)      => ipcRenderer.invoke('connections:importText', text),
+  removeConnections:      ()          => ipcRenderer.invoke('connections:remove'),
+  getConnectionsSummary:  ()          => ipcRenderer.invoke('connections:summary'),
+  connectionsForCompanies: (companies) => ipcRenderer.invoke('connections:forCompanies', companies),
+  checkConnectionBoards:  ()          => ipcRenderer.invoke('connections:checkBoards'),
+  stopConnectionBoardsCheck: ()       => ipcRenderer.invoke('connections:stopCheck'),
+  onConnectionBoardsProgress: (cb) => {
+    const handler = (_event, data) => cb(data);
+    ipcRenderer.on('connections:checkProgress', handler);
+    return () => ipcRenderer.removeListener('connections:checkProgress', handler);
+  },
+  // The connections summary again after each company is looked up, by a check
+  // or a search.
+  onConnectionsUpdated: (cb) => {
+    const handler = (_event, data) => cb(data);
+    ipcRenderer.on('connections:updated', handler);
+    return () => ipcRenderer.removeListener('connections:updated', handler);
+  },
+
+  // ── Company boards ──────────────────────────────────────────────────────────
+  boardStatus:     (companies)              => ipcRenderer.invoke('boards:status', companies),
+  lookupBoard:     (company, careersUrl)    => ipcRenderer.invoke('boards:lookup', { company, careersUrl }),
+  boardFromLink:   (ats, link)              => ipcRenderer.invoke('boards:fromLink', { ats, link }),
 
   // ── Auth ────────────────────────────────────────────────────────────────────
   isLoggedIn:      ()  => ipcRenderer.invoke('auth:isLoggedIn'),

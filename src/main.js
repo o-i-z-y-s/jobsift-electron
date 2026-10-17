@@ -8,14 +8,16 @@
 
 const {
   app, BrowserWindow, Tray, Menu, nativeImage,
-  ipcMain, session, Notification, shell,
+  ipcMain, session, Notification, shell, dialog,
 } = require('electron');
 const path = require('path');
 const fs   = require('fs');
 
 const cfgModule  = require('./config');
-const { RULES }  = require('./criteria');
+const { RULES, jobrightPlan } = require('./criteria');
 const scheduler  = require('./scheduler');
+const connections = require('./connections');
+const boards     = require('./boards');
 
 // Force the app name so the userData directory is ALWAYS %APPDATA%/JobSift,
 // regardless of how the app is launched. When launched as `electron .` the name
@@ -69,6 +71,48 @@ function timestamp() {
          `_${p(now.getHours())}-${p(now.getMinutes())}`;
 }
 
+// ── Connections and known boards ──────────────────────────────────────────────
+// Both files live in the app data folder, never in the repo. One KnownBoards
+// instance is shared by runs and by the config page, so a lookup made while a
+// run is going is not overwritten when the run saves.
+
+function dataDir() {
+  return app.getPath('userData');
+}
+
+let _kb = null;
+function knownBoards() {
+  if (!_kb) _kb = new boards.KnownBoards(dataDir());
+  return _kb;
+}
+
+// What the config page shows: counts, the import date, and each company with
+// its board status. No person's name is included.
+function connectionsSummary() {
+  const data = connections.load(dataDir());
+  if (!data) return null;
+  const kb = knownBoards();
+  const now = Date.now();
+  let lookupCount = 0, lookupSeconds = 0;
+  const companies = connections.companiesByCount(data.people).map(c => {
+    if (boards.lookupDue(kb, c.name, now)) { lookupCount++; lookupSeconds += boards.lookupSeconds(c.name); }
+    return { name: c.name, count: c.count, coverage: boards.coverage(kb, c.name) };
+  });
+  return {
+    imported_at: data.imported_at, people_count: data.people.length, company_count: companies.length, companies,
+    lookup_count: lookupCount, lookup_minutes: Math.ceil(lookupSeconds / 60),
+  };
+}
+
+const MAX_CSV_BYTES = 50 * 1024 * 1024;
+
+function importConnectionsText(text) {
+  const people = connections.readLinkedInCsv(text);
+  if (!people.length) throw new Error('No connections with a company were found in that file.');
+  connections.save(dataDir(), people);
+  return connectionsSummary();
+}
+
 const SCAN_LABELS = { 1: 'Past 24 hours', 3: 'Past 3 days', 7: 'Past week', 30: 'Past 30 days' };
 
 // ── Requisition-id dedup (all platforms, both sources) ────────────────────────
@@ -77,7 +121,7 @@ const SCAN_LABELS = { 1: 'Past 24 hours', 3: 'Past 3 days', 7: 'Past week', 30: 
 // supported ATS apply URL into a canonical "platform:id" key. Because Jobright's
 // "Original Job Post" link and the direct ATS fetch point at the SAME posting,
 // both yield the same key, so duplicates collapse across both sources and across
-// Greenhouse, Lever, Ashby, and Workday.
+// every hiring system JobSift reads.
 function atsUrlKey(url) {
   if (!url) return '';
   let u;
@@ -98,11 +142,33 @@ function atsUrlKey(url) {
     m = urlPath.match(UUID);
     if (m) return `as:${m[1].toLowerCase()}`;
   }
-  if (host.includes('myworkdayjobs.com')) {        // .../...{title}_{reqId}  (one per state)
+  if (host.includes('myworkdayjobs.com') || host.includes('myworkdaysite.com')) {   // .../...{title}_{reqId}  (one per state)
     m = urlPath.match(/_([A-Za-z]{1,5}-?\d{4,})(?:[-_]\d{1,3})?$/)
      || urlPath.match(/([A-Za-z]{1,5}-?\d{4,})(?:[-_]\d{1,3})?(?:[/?#]|$)/);
-    if (m) return `wd:${host}:${m[1].toUpperCase()}`;
+    // myworkdaysite.com is shared by many companies: the company is in the path.
+    const tenant = host.includes('myworkdaysite.com') ? (urlPath.match(/\/recruiting\/([^/]+)\//i) || [])[1] : '';
+    if (m) return `wd:${host}${tenant ? '/' + tenant.toLowerCase() : ''}:${m[1].toUpperCase()}`;
   }
+  if (host === 'jobs.gem.com') {                   // jobs.gem.com/{board}/{id}
+    m = urlPath.match(/^\/[^/]+\/([^/?#]+)/);
+    if (m) return `gm:${m[1]}`;
+  }
+  if (host.endsWith('rippling.com')) {             // ats.rippling.com/{board}/jobs/{uuid}
+    m = urlPath.match(UUID);
+    if (m) return `rp:${m[1].toLowerCase()}`;
+  }
+  if (host.endsWith('workable.com')) {             // apply.workable.com/[{board}/]j/{shortcode}
+    m = urlPath.match(/\/j\/([A-Za-z0-9]+)/);
+    if (m) return `wk:${m[1].toUpperCase()}`;
+  }
+  if (urlPath.includes('/hcmUI/CandidateExperience/')) {   // Oracle: .../job/{id}
+    m = urlPath.match(/\/job\/(\d+)/);
+    if (m) return `or:${host}:${m[1]}`;
+  }
+  m = urlPath.match(/^\/careers\/job\/(\d+)/) || (host.endsWith('.eightfold.ai') && /[?&]pid=(\d+)/.exec(u.search));
+  if (m) return `ef:${m[1]}`;                      // Eightfold: /careers/job/{id} or ?pid={id}
+  m = urlPath.match(/^\/(?:[a-z]{2}(?:[-_][a-z]{2})?\/)?jobs\/(\d+)/i);
+  if (m) return `jobs:${host}:${m[1]}`;            // iCIMS career sites and others: /jobs/{id}
   // Career-network sites (e.g. "{company}.jobs") that list the same role once per
   // location as /{location}/{title-slug}/{32-hex-id}/job/. The location and hex id
   // differ per posting, so key on host + the stable title slug.
@@ -127,6 +193,7 @@ let tray         = null;
 let loginWin     = null;
 let mainWin      = null;   // single app window (dashboard + config + wizard)
 let scrapeAbort  = null;   // AbortController | null
+let boardCheckAbort = null;   // AbortController of a running connections board check | null
 let isQuitting   = false;
 let lastDaysAgo  = 7;      // last-used scan period (days); persisted in config._lastDaysAgo
 let passControl  = null;   // { abort: bool } - lets the user skip the current Jobright pass
@@ -379,6 +446,7 @@ async function runPipeline(options) {
   const jobrightScraper = require('./scraper/jobright');
   const atsScraper      = require('./scraper/ats-http');
   const evalEngine      = require('./eval');
+  const { sourcesFromConfig, postedBy } = require('./sources');
 
   const cfg = cfgModule.load();
 
@@ -417,7 +485,7 @@ async function runPipeline(options) {
         broadcast('scrape:progress', {
           step: 'jobright',
           message: msg,
-          pct: 5 + Math.round(pct * 0.50),
+          pct: 5 + Math.round(pct * 50),
         }),
     });
   } catch (err) {
@@ -439,6 +507,30 @@ async function runPipeline(options) {
     pct: 55,
   });
 
+  // ── Known boards: learn from apply links ──────────────────────────────────
+  // Jobright runs first, so a board learned from one of its apply links can be
+  // searched directly in this same run. Only postings made by the employer
+  // itself count: a reposting site or staffing firm does not own the board its
+  // apply link points to.
+  const kb = knownBoards();
+  kb.syncFromConfig(cfg);
+  try {
+    const src = sourcesFromConfig(cfg);
+    const learned = boards.learnFromApplyLinks(jobrightRaw, kb, rec => postedBy(rec, src).kind === 'employer',
+                                               [...src.jobBoardLinks, ...src.staffingLinks]);
+    kb.save();
+    if (learned.length) {
+      broadcast('scrape:progress', { step: 'ats', message: `Learned ${learned.length} company job boards from apply links`, pct: 56 });
+    }
+  } catch (err) {
+    console.error('Learning boards from apply links failed:', err);
+  }
+
+  // The connections' companies, most connections first, when imported and the
+  // user has turned on searching them.
+  const people = (cfg.connections?.search_companies === true && connections.load(dataDir())?.people) || [];
+  const connectionCompanies = connections.companiesByCount(people);
+
   // ── ATS HTTP (13% of progress budget) ─────────────────────────────────────
   broadcast('scrape:progress', { step: 'ats', message: 'Scraping ATS boards...', pct: 57 });
 
@@ -446,12 +538,15 @@ async function runPipeline(options) {
   try {
     atsRaw = await atsScraper.run({
       cfg,
+      kb,
+      connectionCompanies,
       signal: scrapeAbort.signal,
+      onChecked: () => broadcast('connections:updated', connectionsSummary()),
       onProgress: (msg, pct) =>
         broadcast('scrape:progress', {
           step: 'ats',
           message: msg,
-          pct: 57 + Math.round(pct * 0.13),
+          pct: 57 + Math.round(pct * 13),
         }),
     });
   } catch (err) {
@@ -462,6 +557,7 @@ async function runPipeline(options) {
       pct: 70,
     });
   }
+  try { kb.save(); } catch (err) { console.error('Saving known boards failed:', err); }
 
   fs.writeFileSync(
     path.join(rawDir(), `job-search-ats-http-${ts}.json`),
@@ -563,6 +659,9 @@ async function runPipeline(options) {
 
 async function triggerScrape(options) {
   if (scrapeAbort) return;  // already running
+  // A search checks the connections' job boards itself, so a check started on
+  // the Connections tab stops here; what it found so far is kept.
+  if (boardCheckAbort) boardCheckAbort.abort();
   if (options && typeof options.daysAgo === 'number') {
     lastDaysAgo = options.daysAgo;
     try { const c = cfgModule.load(); c._lastDaysAgo = lastDaysAgo; cfgModule.save(c); } catch { /* ignore */ }
@@ -579,9 +678,9 @@ async function triggerScrape(options) {
   }
   try {
     const result = await runPipeline(options);
-    // The pipeline always saves an artifact now, even on cancel (it processes
-    // whatever was collected). So if we have a result, surface it; only fall back
-    // to the plain canceled view if no artifact was produced.
+    // The pipeline saves an artifact even on cancel (it processes whatever was
+    // collected). So if we have a result, surface it; only fall back to the
+    // plain canceled view if no artifact was produced.
     if (result) {
       const aborted = scrapeAbort && scrapeAbort.signal.aborted;
       broadcast('scrape:complete', { ...result, canceled: !!aborted });
@@ -628,9 +727,16 @@ function resolveResultPath(fpath) {
 function registerIpc() {
   // Config
   ipcMain.handle('config:load', () => cfgModule.load());
-  ipcMain.handle('config:save', (_e, data) => cfgModule.save(data));
+  ipcMain.handle('config:save', (_e, data) => {
+    cfgModule.save(data);
+    // Keep the known boards in step with the boards entered by hand.
+    try { const kb = knownBoards(); kb.syncFromConfig(data); kb.save(); } catch (err) { console.error(err); }
+  });
   // Read-only: the scoring rules the engine applies, shown on the config page.
   ipcMain.handle('config:rules', () => RULES);
+  // The titles each run searches Jobright and Workday boards for, and where
+  // Jobright is searched, with the given settings.
+  ipcMain.handle('config:jobrightPlan', (_e, cfg) => jobrightPlan(cfg || {}));
 
   // Scrape lifecycle
   // Fire-and-forget: triggerScrape is long-running (full pipeline).
@@ -669,6 +775,125 @@ function registerIpc() {
   ipcMain.handle('results:delete', (_e, fpath) => {
     fs.unlinkSync(resolveResultPath(fpath));
     return true;
+  });
+
+  // Connections. The file is chosen in the system picker, so only a file the
+  // user picked is ever read; the CSV itself is not copied.
+  ipcMain.handle('connections:import', async (e) => {
+    const res = await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender), {
+      title: 'Import LinkedIn connections',
+      filters: [{ name: 'LinkedIn connections (CSV)', extensions: ['csv'] }],
+      properties: ['openFile'],
+    });
+    if (res.canceled || !res.filePaths.length) return { canceled: true };
+    const file = res.filePaths[0];
+    if (fs.statSync(file).size > MAX_CSV_BYTES) throw new Error('That file is too large to be a LinkedIn connections export.');
+    return importConnectionsText(fs.readFileSync(file, 'utf8'));
+  });
+  // A file dropped on the page arrives as its text, read by the page itself,
+  // so the main process never opens a path the page names.
+  ipcMain.handle('connections:importText', (_e, text) => {
+    if (typeof text !== 'string') throw new Error('That file could not be read.');
+    if (text.length > MAX_CSV_BYTES) throw new Error('That file is too large to be a LinkedIn connections export.');
+    return importConnectionsText(text);
+  });
+  ipcMain.handle('connections:remove', () => { connections.remove(dataDir()); return null; });
+  ipcMain.handle('connections:summary', () => connectionsSummary());
+  // The Connections tab's "Check them now": looks up the connections'
+  // companies' job boards outside a search, the same way a search does,
+  // reporting { n, total } on connections:checkProgress before each lookup
+  // and the new summary on connections:updated after it.
+  ipcMain.handle('connections:checkBoards', async (e) => {
+    if (scrapeAbort) throw new Error('A search is running. It checks the job boards itself.');
+    if (boardCheckAbort) throw new Error('The job boards are already being checked.');
+    const data = connections.load(dataDir());
+    if (!data) throw new Error('Import your connections first.');
+    const cfg = cfgModule.load();
+    const kb = knownBoards();
+    kb.syncFromConfig(cfg);
+    const skip = new Set([...boards.boardsFromConfig(cfg.ats_boards || {}).map(r => r.company),
+                          ...Object.keys(cfg.ats_boards?.workday_companies || {})].map(connections.companyKey));
+    boardCheckAbort = new AbortController();
+    const signal = boardCheckAbort.signal;
+    try {
+      const res = await boards.checkCompanies(kb, connections.companiesByCount(data.people), {
+        skip, signal, recheckDays: cfg.connections?.recheck_days || undefined,
+        onProgress: (n, total) => {
+          if (!e.sender.isDestroyed()) e.sender.send('connections:checkProgress', { n, total });
+          if (n % 10 === 0) kb.save();   // a long check keeps what it found if the app closes
+        },
+        onChecked: () => broadcast('connections:updated', connectionsSummary()),
+      });
+      kb.save();
+      return { canceled: signal.aborted, looked: res.looked, found: res.found, summary: connectionsSummary() };
+    } finally {
+      boardCheckAbort = null;
+    }
+  });
+  ipcMain.handle('connections:stopCheck', () => { if (boardCheckAbort) boardCheckAbort.abort(); });
+  // For the dashboard: the connections at each of the given companies, matched
+  // when the dashboard is shown and never saved into results.
+  ipcMain.handle('connections:forCompanies', (_e, companies) => {
+    const data = connections.load(dataDir());
+    if (!data || !Array.isArray(companies)) return {};
+    const index = connections.peopleByKey(data.people);
+    const out = {};
+    for (const name of companies.slice(0, 20000)) {
+      if (typeof name !== 'string') continue;
+      const people = index.get(connections.companyKey(name));
+      if (people) out[name] = people;
+    }
+    return out;
+  });
+
+  // Company boards.
+  // The known-boards entry for each of the given companies (or null), matched
+  // by cleaned-up name, for the status shown beside each company.
+  ipcMain.handle('boards:status', (_e, companies) => {
+    const kb = knownBoards();
+    const out = {};
+    for (const name of (Array.isArray(companies) ? companies : []).slice(0, 5000)) {
+      if (typeof name === 'string') out[name] = kb.get(name);
+    }
+    return out;
+  });
+  // Finds a company's board from its name, and an optional careers page link.
+  ipcMain.handle('boards:lookup', async (_e, { company, careersUrl } = {}) => {
+    company = String(company || '').trim();
+    careersUrl = String(careersUrl || '').trim();
+    if (!connections.companyKey(company)) throw new Error('Enter a company name.');
+    if (careersUrl && !/^https?:\/\//i.test(careersUrl)) throw new Error('The careers page link must start with http:// or https://');
+    const kb = knownBoards();
+    let recheckDays;
+    try { recheckDays = cfgModule.load().connections?.recheck_days; } catch { /* default */ }
+    const result = await boards.lookup(company, kb, { careersUrl, explicit: true, recheckDays: recheckDays || undefined });
+    kb.save();
+    return {
+      found: result.found,
+      message: boards.describe(company, result),
+      ats: result.found ? result.entry.ats : null,
+      board: result.found ? result.entry.board : null,
+    };
+  });
+  // Reads a board out of a pasted board link or board name.
+  ipcMain.handle('boards:fromLink', (_e, { ats, link } = {}) => {
+    link = String(link || '').trim();
+    if (!link) throw new Error('Enter the board link.');
+    if (/^https?:\/\//i.test(link)) {
+      const hit = boards.boardFromUrl(link);
+      if (hit) return hit;
+      // A Workday careers page: its board is found by scanning it on the next run.
+      if (ats === 'workday') return { ats: 'workday', careersUrl: link };
+      // iCIMS and Eightfold career sites live on the company's own address.
+      const origin = new URL(link).origin.toLowerCase();
+      if (ats === 'icims') return { ats, board: { base_url: origin } };
+      if (ats === 'eightfold') return { ats, board: { base_url: origin, domain: boards.siteDomain(new URL(origin).hostname) } };
+      throw new Error(`That link is not a ${boards.SYSTEMS[ats] || 'job'} board JobSift can read.`);
+    }
+    if (boards.SLUG_SYSTEMS.includes(ats) && /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(link)) return { ats, board: { slug: link.toLowerCase() } };
+    throw new Error(ats === 'workday' ? 'Paste the Workday board link or the careers page link.'
+      : boards.SLUG_SYSTEMS.includes(ats) ? 'Paste the board link or its board name.'
+      : `Paste a link to one of the company’s ${boards.SYSTEMS[ats] || ''} job postings.`);
   });
 
   // Auth

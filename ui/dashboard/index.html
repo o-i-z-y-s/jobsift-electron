@@ -342,6 +342,7 @@
     border: 1px solid color-mix(in srgb, var(--muted) 25%, transparent); }
   .badge.tag.target { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent);
     border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+  .badge.tag.conn { color: var(--green); background: color-mix(in srgb, var(--green) 12%, transparent); cursor: help; }
   .badge.tag.board { color: var(--flag); background: color-mix(in srgb, var(--flag) 10%, transparent);
     border-color: color-mix(in srgb, var(--flag) 30%, transparent); }
   .source-block { font-size: 12px; color: var(--muted); margin-bottom: 8px; line-height: 1.5; }
@@ -750,12 +751,13 @@
       <!-- populated dynamically by render() from meta.track_labels -->
     </div>
     <div class="filter-group" id="type-filter-group">
-      <span title="Set in Configuration, Tracks tab, under Role Types" style="cursor:help">Role Type</span>
+      <span title="Set in Configuration, on the Roles tab (Dashboard tab column)" style="cursor:help">Role Type</span>
       <!-- populated dynamically by render() from role_cat values in loaded data -->
     </div>
     <!-- Built by render() from the values that came up in the loaded run. -->
     <div class="filter-group" id="emp-filter-group"><span>Employment</span></div>
     <div class="filter-group" id="by-filter-group"><span>Posted by</span></div>
+    <div class="filter-group" id="conn-filter-group" style="display:none"><span>Connections</span></div>
     <button class="browse-btn" style="padding:4px 10px;font-size:11px;background:var(--surface2);color:var(--muted);border:1px solid var(--border);margin-left:auto"
             onclick="resetFilters()">Reset filters</button>
   </div>
@@ -806,7 +808,7 @@
           <label><input type="radio" name="tier" id="tier-all" value="all" onchange="onRejFilterChange()"> All rejections</label>
         </div>
         <div class="filter-group" id="rej-tab-group">
-          <span title="Set in Configuration, Tracks tab, under Role Types" style="cursor:help">Role Type</span>
+          <span title="Set in Configuration, on the Roles tab (Dashboard tab column)" style="cursor:help">Role Type</span>
           <div id="rej-tab-buttons" class="rej-tab-buttons"><!-- built by renderRejectedSection() from the role types present --></div>
         </div>
       </div>
@@ -868,6 +870,12 @@ let rejOpen     = false;
 let sourceTab   = 'jobright';
 
 const isAtsRole = r => !!(r.id && r.id.startsWith('ats_'));
+
+// The user's connections at the companies in the loaded run: company -> [name].
+// Asked for each time a run is shown and never saved into results, so past runs
+// get badges too and removing connections removes every name at once.
+let CONNECTIONS = {};
+let _connRequest = 0;
 
 // Track colors, assigned in configured order from the palette's --track-N
 // tokens. Values only ever come from TRACK_COLORS, never from data, so they are
@@ -1033,7 +1041,7 @@ fileInput.addEventListener('change', e => {
   reader.readAsText(file);
 });
 
-// Scan period in days, mirroring the CLI (24h / 3d / 1 week / 1 month).
+// Scan period in days (24h / 3d / 1 week / 1 month).
 let _runPeriod = 7;
 function setRunPeriod(v, persist = true) {
   _runPeriod = parseInt(v, 10) || 7;
@@ -1061,26 +1069,31 @@ function setIncludeSeen(v) {
 }
 
 // Append a line to the live activity feed, skipping consecutive duplicates and
-// keeping the list to a sane length.
+// keeping the list to a sane length. The feed follows new lines only while it
+// is scrolled to the bottom; once the user scrolls up, it stays where they put it.
 function appendProgressLog(message) {
   const log = document.getElementById('progress-log');
   if (!log || !message) return;
+  const following = log.scrollHeight - log.scrollTop - log.clientHeight < 8;
   const last = log.lastChild;
-  // Collapse repetitive "n/total" progress: if the new line has the same text
-  // before the ratio as the previous line, update that line in place instead of
-  // printing a new one for every page.
-  const RATIO = /^(.*?)(\d+)\s*\/\s*(\d+)\s*$/;
+  // Collapse repetitive "n/total" or "n of total" progress: if the new line has
+  // the same text before the count as the previous line, update that line in
+  // place instead of printing a new one for every page.
+  const RATIO = /^(.*?)(\d+)\s*(?:\/|of)\s*(\d+)\s*$/;
   const m = message.match(RATIO);
   if (m && last) {
     const lm = (last.textContent || '').match(RATIO);
-    if (lm && lm[1] === m[1]) { last.textContent = message; log.scrollTop = log.scrollHeight; return; }
+    if (lm && lm[1] === m[1]) { last.textContent = message; if (following) log.scrollTop = log.scrollHeight; return; }
   }
   if (last && last.textContent === message) return;  // skip consecutive duplicates
   const line = document.createElement('div');
   line.textContent = message;
   log.appendChild(line);
-  while (log.childElementCount > 100) log.removeChild(log.firstChild);
-  log.scrollTop = log.scrollHeight;
+  // Lines dropped from the top would shift what the user is reading upward.
+  let dropped = 0;
+  while (log.childElementCount > 100) { dropped += log.firstChild.offsetHeight || 0; log.removeChild(log.firstChild); }
+  if (following) log.scrollTop = log.scrollHeight;
+  else if (dropped) log.scrollTop = Math.max(0, log.scrollTop - dropped);
 }
 
 // Cancel wrapper: signal the main process and reflect "stopping" in the UI so the
@@ -1311,13 +1324,14 @@ function render(data) {
   });
 
   // Build dynamic role-type filter from unique role_cat values in loaded roles
-  const allCats   = [...new Set((accData.roles || []).map(r => r.role_cat || 'Other'))].sort();
+  // Every role type in the run, accepted or rejected, so each role is covered by a checkbox.
+  const allCats   = [...new Set([...allRoles, ...allRejRoles].map(roleTypeOf))].sort();
   const typeGroup = document.getElementById('type-filter-group');
   const prevTypeState = {};
   typeGroup.querySelectorAll('input[type=checkbox]').forEach(cb => {
     prevTypeState[cb.dataset.cat] = cb.checked;
   });
-  typeGroup.innerHTML = '<span title="Set in Configuration, Tracks tab, under Role Types" style="cursor:help">Role Type</span>';
+  typeGroup.innerHTML = '<span title="Set in Configuration, on the Roles tab (Dashboard tab column)" style="cursor:help">Role Type</span>';
   allCats.forEach(cat => {
     const checked = prevTypeState[cat] !== undefined ? prevTypeState[cat] : true;
     const lbl = document.createElement('label');
@@ -1327,8 +1341,14 @@ function render(data) {
 
   buildFacet('emp-filter-group', 'Employment', empOf);
   buildFacet('by-filter-group',  'Posted by',  byOf);
+  CONNECTIONS = {};
+  buildFacet('conn-filter-group', 'Connections', connOf);
+  loadConnectionsFor([...allRoles, ...allRejRoles]);
 
   applyTrackFilter();
+  // An open Screened Out panel still holds the previous run's rows (and their
+  // connection names); redraw it for this run.
+  if (rejOpen) { renderRejectedSection(); rejRendered = true; }
 
   // If nothing was accepted but roles were reviewed and rejected, auto-expand the
   // rejected panel so the run is not a blank-looking screen.
@@ -1349,6 +1369,25 @@ function render(data) {
 // existed has neither, and the group is hidden.
 function empOf(r) { return r.employment_type || null; }
 function byOf(r)  { return (r.posted_by && r.posted_by.label) || null; }
+// Only offered when someone in the run is at a company you know someone at.
+function peopleAt(r) { return CONNECTIONS[r.company] || null; }
+function connOf(r) {
+  if (!Object.keys(CONNECTIONS).length) return null;
+  return peopleAt(r) ? 'Has a connection' : 'No connection';
+}
+
+function loadConnectionsFor(roles) {
+  if (!window.electronAPI?.connectionsForCompanies) return;
+  const req = ++_connRequest;
+  const companies = [...new Set(roles.map(r => r.company).filter(Boolean))];
+  window.electronAPI.connectionsForCompanies(companies).then(found => {
+    if (req !== _connRequest) return;   // a newer run was loaded meanwhile
+    CONNECTIONS = found || {};
+    if (!Object.keys(CONNECTIONS).length) return;
+    buildFacet('conn-filter-group', 'Connections', connOf);
+    onFilterChange();
+  }).catch(() => {});
+}
 
 function buildFacet(groupId, title, valueOf) {
   const group = document.getElementById(groupId);
@@ -1368,10 +1407,11 @@ function buildFacet(groupId, title, valueOf) {
 function facetHidden() {
   const off = id => new Set([...document.querySelectorAll(`#${id} input[type=checkbox]`)]
     .filter(cb => !cb.checked).map(cb => cb.dataset.val));
-  return { emp: off('emp-filter-group'), by: off('by-filter-group') };
+  return { emp: off('emp-filter-group'), by: off('by-filter-group'), conn: off('conn-filter-group') };
 }
 function passesFacets(r, hidden) {
-  return !(empOf(r) && hidden.emp.has(empOf(r))) && !(byOf(r) && hidden.by.has(byOf(r)));
+  return !(empOf(r) && hidden.emp.has(empOf(r))) && !(byOf(r) && hidden.by.has(byOf(r))) &&
+         !(connOf(r) && hidden.conn.has(connOf(r)));
 }
 
 // Labels next to the role title. Full-time and "Not stated" are not shown, nor
@@ -1380,9 +1420,18 @@ function passesFacets(r, hidden) {
 // before this field existed carried it as a "Target company" flag.
 function isTarget(r) { return r.target_company === true || (r.flags || []).includes('Target company'); }
 
+function connectionBadge(r) {
+  const people = peopleAt(r);
+  if (!people) return '';
+  const n = people.length;
+  return `<span class="badge tag conn" title="${esc('You know ' + people.join(', '))}">${n} connection${n === 1 ? '' : 's'}</span>`;
+}
+
 function roleTags(r) {
   const tags = [];
   if (isTarget(r)) tags.push('<span class="badge tag target">Target company</span>');
+  const conn = connectionBadge(r);
+  if (conn) tags.push(conn);
   const emp = empOf(r);
   if (emp && emp !== 'Full-time' && emp !== 'Not stated') tags.push(`<span class="badge tag">${esc(emp)}</span>`);
   if (r.posted_by && r.posted_by.kind !== 'employer') {
@@ -1397,7 +1446,11 @@ function roleTags(r) {
 
 // Who posted it, why it was labeled that way, and the other copies of the job.
 function sourceHtml(r) {
-  if (!r.posted_by && !r.employment_type) return '';
+  const people = peopleAt(r);
+  const connHtml = people
+    ? `<div><strong>Your connections at ${esc(r.company)}:</strong><ul>${people.map(p => `<li>${esc(p)}</li>`).join('')}</ul></div>`
+    : '';
+  if (!r.posted_by && !r.employment_type) return connHtml ? `<div class="source-block">${connHtml}</div>` : '';
   const reasons = (r.posted_by?.reasons || []).map(x => `<li>${esc(x)}</li>`).join('');
   const also = (r.also_posted_by || []).map(a => {
     const u = safeUrl(a.apply_url);
@@ -1408,6 +1461,7 @@ function sourceHtml(r) {
     ${r.employment_type ? `<div><strong>Employment:</strong> ${esc(r.employment_type)}</div>` : ''}
     ${r.posted_by ? `<div><strong>Posted by:</strong> ${esc(r.posted_by.label)}${reasons ? `<ul>${reasons}</ul>` : ''}</div>` : ''}
     ${also ? `<div><strong>Also posted by:</strong><ul>${also}</ul></div>` : ''}
+    ${connHtml}
   </div>`;
 }
 
@@ -1424,22 +1478,21 @@ function handleSourceTab(tab) {
   if (rejOpen) { rejRendered = false; renderRejectedSection(); rejRendered = true; }
 }
 
+// The values checked in a checkbox group, or null when the group has no
+// checkboxes yet (no run loaded), meaning it does not filter. Nothing checked
+// is an empty set, which shows nothing.
+function checkedIn(groupId, key) {
+  const boxes = [...document.querySelectorAll(`#${groupId} input[type=checkbox]`)];
+  return boxes.length ? new Set(boxes.filter(cb => cb.checked).map(cb => cb.dataset[key])) : null;
+}
+
 function applyTrackFilter() {
-  const activeTracks = new Set(
-    [...document.querySelectorAll('#track-filter-group input[type=checkbox]')]
-      .filter(cb => cb.checked).map(cb => cb.dataset.track)
-  );
-  const activeTypes = new Set(
-    [...document.querySelectorAll('#type-filter-group input[type=checkbox]')]
-      .filter(cb => cb.checked).map(cb => cb.dataset.cat)
-  );
-  // If filters haven't been built yet (no data loaded), show everything
-  const noTrackFilter = activeTracks.size === 0;
-  const noTypeFilter  = activeTypes.size  === 0;
+  const tracks = checkedIn('track-filter-group', 'track');
+  const types  = checkedIn('type-filter-group', 'cat');
   const hidden = facetHidden();
   filteredRoles = allRoles.filter(r =>
-    (noTrackFilter || activeTracks.has(r.track)) &&
-    (noTypeFilter  || activeTypes.has(r.role_cat || 'Other')) &&
+    (!tracks || tracks.has(r.track)) &&
+    (!types  || types.has(roleTypeOf(r))) &&
     passesFacets(r, hidden) &&
     (sourceTab === 'ats' ? isAtsRole(r) : !isAtsRole(r))
   );
@@ -1449,7 +1502,7 @@ function applyTrackFilter() {
 function resetFilters() {
   document.querySelectorAll('#track-filter-group input[type=checkbox]').forEach(cb => { cb.checked = true; });
   document.querySelectorAll('#type-filter-group input[type=checkbox]').forEach(cb => { cb.checked = true; });
-  document.querySelectorAll('#emp-filter-group input[type=checkbox], #by-filter-group input[type=checkbox]')
+  document.querySelectorAll('#emp-filter-group input[type=checkbox], #by-filter-group input[type=checkbox], #conn-filter-group input[type=checkbox]')
     .forEach(cb => { cb.checked = true; });
   onFilterChange();
 }
@@ -1699,27 +1752,17 @@ function handleRejTab(tab) {
 }
 
 function getFilteredRejRoles() {
-  // Same track checkboxes as the accepted side. If none are checked, show all tracks.
-  const activeTracks = new Set(
-    [...document.querySelectorAll('#track-filter-group input[type=checkbox]')]
-      .filter(cb => cb.checked).map(cb => cb.dataset.track)
-  );
-  const noTrackFilter = activeTracks.size === 0;
+  // The same Track and Role Type checkboxes as the accepted side.
+  const tracks = checkedIn('track-filter-group', 'track');
+  const types  = checkedIn('type-filter-group', 'cat');
   let roles = allRejRoles.filter(r =>
-    (noTrackFilter || activeTracks.has(r.track)) &&
+    (!tracks || tracks.has(r.track)) &&
+    (!types  || types.has(roleTypeOf(r))) &&
     (sourceTab === 'ats' ? isAtsRole(r) : !isAtsRole(r))
   );
   if (rejState.tier !== 'all') {
     roles = roles.filter(r => r.rejection_tier === rejState.tier);
   }
-  // Honor the Role Type checkboxes too. They are built from accepted roles
-  // only, so a type that appears only among rejections has no checkbox; only
-  // types the user has explicitly unchecked are hidden here.
-  const uncheckedTypes = new Set(
-    [...document.querySelectorAll('#type-filter-group input[type=checkbox]')]
-      .filter(cb => !cb.checked).map(cb => cb.dataset.cat)
-  );
-  if (uncheckedTypes.size) roles = roles.filter(r => !uncheckedTypes.has(roleTypeOf(r)));
   const hidden = facetHidden();
   return roles.filter(r => passesFacets(r, hidden));
 }
@@ -1937,10 +1980,8 @@ function chip(label, val, color) {
   return `<div class="stat-chip">${label} ${valHtml}</div>`;
 }
 
-// esc() is kept as the local name for the shared helper so the ~14 existing
-// call sites stay untouched. The shared version also escapes ' , which the
-// previous local copy did not, and this page interpolates into single-quoted
-// inline handler arguments.
+// esc() is the shared escapeHtml helper. It escapes ' too, which matters here:
+// this page interpolates into single-quoted inline handler arguments.
 function esc(str) { return escHtml(str); }
 </script>
 </body>

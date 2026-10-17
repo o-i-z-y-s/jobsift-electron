@@ -1,5 +1,5 @@
 {
-  "config_version": 3,
+  "config_version": 5,
   "setup_complete": false,
   "user_state": "",
   "roles": [],
@@ -17,27 +17,47 @@
       "salary_floor": 0,
       "pay_top": null,
       "pay_good": null,
-      "reject_if_max_below": null,
       "reject_if_no_salary": false,
       "wiggle_room": 0,
       "accept_grades": "ABC",
       "industry_required": false,
       "clearance_behavior": "flag",
-      "title_require": [],
       "title_block": [],
       "excluded_companies": [],
+      "blocked_industries": [],
       "target_companies": [],
       "employment_types": []
     }
   ],
   "title_filters": {
-    "title_block": [],
-    "card_exclude": []
+    "title_block": []
   },
   "company_lists": {
     "target_companies": [],
     "blocked_companies": [],
-    "staffing_firms": []
+    "staffing_firms": [
+      "Robert Half",
+      "Randstad",
+      "Adecco",
+      "ManpowerGroup",
+      "Kelly Services",
+      "Aerotek",
+      "TEKsystems",
+      "Allegis Group",
+      "Insight Global",
+      "Kforce",
+      "Apex Systems",
+      "Experis",
+      "Akkodis",
+      "CyberCoders",
+      "Motion Recruitment",
+      "Beacon Hill Staffing Group",
+      "Express Employment Professionals",
+      "Spherion",
+      "Vaco",
+      "Collabera",
+      "Michael Page"
+    ]
   },
   "rejection_filters": {
     "max_experience_years": null,
@@ -46,32 +66,16 @@
     "domain_experience_industries": [],
     "description_blockers": []
   },
-  "role_categories": {
-    "categories": []
-  },
-  "jobright_searches": {
-    "passes": [
-      {
-        "id": "remote",
-        "label": "",
-        "taxonomy": "",
-        "work_model": "remote"
-      },
-      {
-        "id": "local",
-        "label": "",
-        "taxonomy": "",
-        "work_model": "local"
-      }
-    ]
-  },
   "ats_boards": {
     "greenhouse": {},
     "lever": {},
     "ashby": {},
     "workday_direct": {},
-    "workday_companies": {},
-    "workday_search_terms": []
+    "workday_companies": {}
+  },
+  "connections": {
+    "search_companies": false,
+    "recheck_days": 30
   },
   "settings": {
     "min_match_pct": 60,

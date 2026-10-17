@@ -101,6 +101,24 @@ function sourcesFromConfig(cfg) {
   };
 }
 
+// A Jobright card reads, one item per line: posted date and badges, the job
+// title, the company, "/", the company's industry tags ("Staffing & Recruiting
+// · Early Stage"), then location, employment type, pay, and work arrangement.
+function cardFields(cardText) {
+  const lines = String(cardText || '').split('\n').map(l => l.trim()).filter(Boolean);
+  const i = lines.indexOf('/');
+  if (i < 2) return null;
+  const rest = lines.slice(i + 2);
+  return {
+    title:     lines[i - 2],
+    company:   lines[i - 1],
+    tags:      lines[i + 1] || '',
+    location:  rest[0] || '',
+    salary:    rest.find(l => /\$/.test(l)) || '',
+    work_type: rest.find(l => /^(remote|hybrid|on.?site|in.person)$/i.test(l)) || '',
+  };
+}
+
 // The company line on a Jobright card is followed by "/" and its industry
 // tags, e.g. "Staffing & Recruiting · Early Stage".
 function cardTags(cardText) {
@@ -207,5 +225,5 @@ const SOURCE_RANK = { employer: 0, staffing: 1, job_board: 2 };
 
 module.exports = {
   EMPLOYMENT_TYPES, NOT_STATED, POSTED_BY, DEFAULT_SOURCES, SOURCE_RANK, SAME_JOB_SHARE,
-  normalizeEmploymentType, employmentTypeOf, sourcesFromConfig, postedBy, postedByAll, groupSameJob, hostOf,
+  normalizeEmploymentType, employmentTypeOf, sourcesFromConfig, postedBy, postedByAll, groupSameJob, hostOf, cardFields,
 };

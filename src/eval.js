@@ -79,7 +79,6 @@ function haversineMi(lat1, lon1, lat2, lon2) {
 
 /**
  * Returns true (in range), false (out of range), or null (geocoding failed).
- * Mirrors geo_utils.multi_within_radius().
  */
 async function multiWithinRadius(loc, targetLocation, radiusMi) {
   // Split multi-city locations and check each part
@@ -254,16 +253,6 @@ function wtBucket(wt) {
   return 'remote';
 }
 
-// ── Role category ─────────────────────────────────────────────────────────────
-
-function roleCategory(title, roleCategories) {
-  const t = (title || '').toLowerCase();
-  for (const cat of (roleCategories || [])) {
-    if ((cat.keywords || []).some(kw => t.includes(kw.toLowerCase()))) return cat.label;
-  }
-  return roleCategories?.length ? roleCategories[roleCategories.length - 1].label : 'Other';
-}
-
 // ── Main export ───────────────────────────────────────────────────────────────
 
 /**
@@ -278,7 +267,6 @@ async function run(mergePayload, cfgIn) {
   const today       = mergePayload.date || new Date().toISOString().slice(0, 10);
   const scrapeTime  = mergePayload.time || '';
   const searchTerm  = cfg.pipeline?.search_term || '';
-  const roleCats    = cfg.role_categories?.categories || [{ label: 'Other', keywords: [] }];
 
   // Build tracks map (ordered)
   const tracks = {};
@@ -341,13 +329,13 @@ async function run(mergePayload, cfgIn) {
 
   // Per-track compiled regexes
   const trackExclRe   = {};
+  const trackIndRe    = {};
   const trackTargetRe = {};
-  const trackTitleReqRe = {};
   const trackTitleBlkRe = {};
   for (const [tid, t] of Object.entries(tracks)) {
     trackExclRe[tid]     = buildRe(t.excluded_companies || []);
+    trackIndRe[tid]      = buildRe(t.blocked_industries || []);
     trackTargetRe[tid]   = buildRe(t.target_companies   || []);
-    trackTitleReqRe[tid] = (t.title_require || []).length ? buildRe(t.title_require) : null;
     trackTitleBlkRe[tid] = buildRe(t.title_block || []);
   }
 
@@ -383,6 +371,9 @@ async function run(mergePayload, cfgIn) {
   const hybridWarnings = [];
 
   const bodyText = i => `${allResults[i].responsibilities || ''} ${allResults[i].required_quals || ''}`;
+  // The dashboard tab a job is shown under: its role's type (the role that
+  // track accepts, for an accepted job), or "Other".
+  const roleTypeOf = (title, trackId = null) => matchRole(title, crit, trackId)?.type || 'Other';
 
   function univRej(jid, idx, title, company, salary, wt, wbEff, loc, pct, postedDays, reason, notes, ats, sp) {
     const firstTrack = Object.keys(tracks)[0] || '';
@@ -390,7 +381,7 @@ async function run(mergePayload, cfgIn) {
       jid, idx, track: firstTrack, company, title, salary,
       work_type: wt, work_type_eff: wbEff, location: loc,
       match_pct: pct, posted_days: postedDays,
-      reason, notes, ats, sp, text: bodyText(idx), role_cat: roleCategory(title, roleCats),
+      reason, notes, ats, sp, text: bodyText(idx), role_cat: roleTypeOf(title),
     });
   }
 
@@ -531,7 +522,13 @@ async function run(mergePayload, cfgIn) {
     // ── Universal hard disqualifiers ────────────────────────────────────────
     let done = false;
 
-    if (!resps && !req && !pref) {
+    // Rejected from its Jobright card by an Avoid rule, without being opened
+    // (see avoidOnCard in scraper/jobright.js).
+    if (r.avoided) {
+      univRej(jid,idx,title,company,salary,wtMut,wbEff,locDisplay,pct,postedDays,r.avoided,'Rejected from the Jobright card; the posting was not opened',ats,sp);
+      done = true;
+    }
+    if (!done && !resps && !req && !pref) {
       univRej(jid,idx,title,company,salary,wtMut,wbEff,locDisplay,pct,postedDays,'Universal: No job description available - returned empty content','',ats,sp);
       done = true;
     }
@@ -672,12 +669,15 @@ async function run(mergePayload, cfgIn) {
       if (trackExclRe[trackId].test(company)) {
         trackRejs[trackId] = `Track ${trackId}: Excluded company - ${company}`; continue;
       }
+      const trackInd = trackIndRe[trackId].exec(allText);
+      if (trackInd) {
+        trackRejs[trackId] = `Track ${trackId}: Blocked industry on this track - ${trackInd[0]}`; continue;
+      }
       if (trackTitleBlkRe[trackId].test(title)) {
         trackRejs[trackId] = `Track ${trackId}: Per-track blocked keyword in title - ${title}`; continue;
       }
-      const ptReq = trackTitleReqRe[trackId];
-      if (ptReq && !ptReq.test(title)) {
-        trackRejs[trackId] = `Track ${trackId}: Title does not match per-track required keyword - ${title}`; continue;
+      if (crit.roles.length && !matchRole(title, crit, trackId)) {
+        trackRejs[trackId] = `Track ${trackId}: Title matches no role this track accepts - ${title}`; continue;
       }
 
       // ── Seniority gates ────────────────────────────────────────────────────
@@ -709,9 +709,6 @@ async function run(mergePayload, cfgIn) {
       const isTarget = TARGET_COMPANIES_RE.test(company) || trackTargetRe[trackId].test(company);
       const salFloor   = isTarget ? (track.salary_floor - (track.wiggle_room || 0)) : track.salary_floor;
 
-      if (track.reject_if_max_below != null && hi !== null && hi < track.reject_if_max_below) {
-        trackRejs[trackId] = `Track ${trackId}: Salary ceiling $${Math.floor(hi/1000)}K below $${Math.floor(track.reject_if_max_below/1000)}K minimum`; continue;
-      }
       if (mid !== null && mid < salFloor) {
         trackRejs[trackId] = `Track ${trackId}: Salary midpoint $${(mid/1000).toFixed(0)}K below $${(salFloor/1000).toFixed(0)}K floor`; continue;
       }
@@ -722,10 +719,10 @@ async function run(mergePayload, cfgIn) {
 
       // ── Scoring ───────────────────────────────────────────────────────────
       // Match score out of 100 (see criteria.js). The track's bar is checked
-      // on the job's own grade; a posting older than three weeks is accepted
-      // on that grade and then shown one grade lower.
-      // For a target company the allowance lowers the floor for pay points
-      // too, so a role let in by the allowance is not scored as below floor.
+      // on the job's own grade; a posting older than settings.stale_after_days
+      // is accepted on that grade and then shown one grade lower.
+      // For a target company the wiggle room lowers the floor for pay points
+      // too, so a role let in by the wiggle room is not scored as below floor.
       const match = scoreJob({ title, text: `${title} ${resps} ${req} ${pref}`, mid, noSalary }, crit,
                              isTarget ? { ...track, salary_floor: salFloor } : track);
       const ind = match.parts.find(p => p.signal === 'Industry');
@@ -757,7 +754,7 @@ async function run(mergePayload, cfgIn) {
       if (noSalary)       notesList.push('Salary not listed');
       if (travel)         notesList.push(`${travel}% travel noted`);
       if (wbEff === 'hybrid') notesList.push('Hybrid work arrangement');
-      if (isTarget && mid !== null && mid < track.salary_floor) notesList.push(`Salary $${(mid/1000).toFixed(0)}K - target company allowance applied`);
+      if (isTarget && mid !== null && mid < track.salary_floor) notesList.push(`Salary $${(mid/1000).toFixed(0)}K - target company wiggle room applied`);
 
       // Additive hidden-constraint flag for remote roles. Does NOT reject or
       // reclassify (the geo gate above already rejects clear exclusions); it only
@@ -791,7 +788,7 @@ async function run(mergePayload, cfgIn) {
         : { pass: false, note: 'Industry: none of your listed industries found' };
 
       acceptedRaw.push({
-        jid, idx, track: trackId, role_cat: roleCategory(title, roleCats),
+        jid, idx, track: trackId, role_cat: roleTypeOf(title, trackId),
         company, title, salary, work_type: wtMut, work_type_eff: wbEff,
         location: locDisplay, match_pct: pct, posted_days: postedDays,
         match: { score: match.score, parts: match.parts },
@@ -813,7 +810,7 @@ async function run(mergePayload, cfgIn) {
         work_type: wtMut, work_type_eff: wbEff, location: locDisplay,
         match_pct: pct, posted_days: postedDays,
         reason: primaryRej, notes: allRejNotes, ats, sp, text: `${resps} ${req}`,
-        role_cat: roleCategory(title, roleCats),
+        role_cat: roleTypeOf(title),
       });
     }
   }
@@ -943,9 +940,9 @@ async function run(mergePayload, cfgIn) {
     [/^security clearance required/,                 'clearance',        'tier1'],
     [/^geo: |^state-restricted remote/,              'geo_restriction',  'tier1'],
     [/^universal: travel /,                          'travel',           'tier1'],
-    [/^universal: title does not match|^title does not match|blocked keyword in title|^blocked title keyword|^country indicator in title/,
+    [/^universal: title does not match|^title does not match|^title matches no role this track accepts|blocked keyword in title|^(?:universal: )?blocked title keyword|^country indicator in title/,
                                                      'blocked_title',    'tier1'],
-    [/^universal: blocked industry/,                 'domain_exclusion', 'tier2'],
+    [/^universal: blocked industry|^blocked industry on this track/, 'domain_exclusion', 'tier2'],
     [/^no listed industry in the posting/,           'domain_exclusion', 'tier1'],
     [/^universal: (?:requires .* experience|domain expertise required|domain experience required|experience bar too high)/,
                                                      'domain_exclusion', 'tier1'],

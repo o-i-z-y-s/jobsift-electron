@@ -8,7 +8,8 @@
  */
 
 const { BrowserWindow } = require('electron');
-const { radiusFor } = require('../criteria');
+const { jobrightPlan } = require('../criteria');
+const { cardFields } = require('../sources');
 
 // ── Selectors (verified against live Jobright DOM 2026-04-29) ─────────────────
 const SEL_CARD      = '[class*="job-card"]';
@@ -80,60 +81,61 @@ function taxonomyUrl(title) {
 }
 
 /**
- * Construct search passes from config.json → jobright_searches.passes.
+ * The Jobright searches for a run: each title in criteria.jobrightPlan(), once
+ * for remote roles (when a track accepts remote work) and once for each
+ * location set on an onsite or hybrid track.
  */
 function buildSearches(cfg, daysAgo) {
-  const passes = (cfg.jobright_searches?.passes) || [];
-
-  // A location-based search runs once for each distinct location set on an
-  // onsite or hybrid track, with that track's commute radius.
-  const seen = new Set();
-  const localAreas = [];
-  for (const t of cfg.tracks || []) {
-    if (!t.target_location || !(t.work_types || []).some(w => ['Onsite', 'Hybrid'].includes(w))) continue;
-    const radius = radiusFor(t);
-    const key = `${t.target_location.toLowerCase()}|${radius}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    localAreas.push({
-      label: `${t.target_location} ${radius}mi`,
-      param: '&locations=' + encodeURIComponent(JSON.stringify([{ city: t.target_location, radiusRange: radius }])),
+  const plan = jobrightPlan(cfg);
+  const places = [];
+  if (plan.remote) places.push({ id: 'remote', label: 'remote', param: '&workModel=2' });
+  for (const a of plan.areas) {
+    places.push({
+      id: `${a.location} ${a.radius}mi`,
+      label: `near ${a.location}, ${a.radius} mi`,
+      param: '&locations=' + encodeURIComponent(JSON.stringify([{ city: a.location, radiusRange: a.radius }])),
     });
   }
-
   const d = `&daysAgo=${daysAgo}`;
   const searches = [];
-
-  passes.forEach((p, i) => {
-    const id = p.id || `search_${i + 1}`;
-    const category = p.taxonomy || '';
-    if ((p.work_model || 'remote') === 'local') {
-      for (const area of localAreas) {   // none when no track has a location
-        searches.push({
-          id:    localAreas.length > 1 ? `${id}@${area.label}` : id,
-          label: p.label ? p.label.replace('{location}', area.label) : `${category || 'Search'} near ${area.label}`,
-          url:   BASE + taxonomyUrl(category) + d + area.param,
-        });
-      }
-    } else {
+  for (const place of places) {
+    for (const title of plan.titles) {
       searches.push({
-        id,
-        label: p.label || `${category || 'Search'} (remote)`,
-        url:   BASE + taxonomyUrl(category) + d + '&workModel=2',
+        id:    `${title} @ ${place.id}`,
+        label: `${title} (${place.label})`,
+        url:   BASE + taxonomyUrl(title) + d + place.param,
       });
     }
-  });
+  }
   return searches;
 }
 
-// ── Card pre-filter ───────────────────────────────────────────────────────────
+// ── Avoid rules, checked on the card ──────────────────────────────────────────
+// The Avoid tab's titles, companies, and industries are checked against what the
+// card shows (its title, company, and industry tags) before the posting is
+// opened. A match is not opened, which saves loading it, but is still returned
+// as a record with the reason, so eval.js lists it as rejected like any other.
+// Matching is the same as eval.js: whole words, any case.
 
-function buildCardExcludeRe(patterns) {
-  if (!patterns.length) return null;
-  return new RegExp(
-    '\\b(' + patterns.map(p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')\\b',
-    'i',
-  );
+function wordsRe(terms) {
+  const list = (terms || []).map(t => String(t).trim()).filter(Boolean);
+  if (!list.length) return null;
+  return new RegExp('\\b(' + list.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')\\b', 'i');
+}
+
+/** A function returning the Avoid reason for a card's text, or null. */
+function avoidOnCard(cfg) {
+  const titles     = wordsRe(cfg.title_filters?.title_block);
+  const companies  = wordsRe(cfg.company_lists?.blocked_companies);
+  const industries = wordsRe(cfg.rejection_filters?.blocked_industries);
+  return (text) => {
+    const card = cardFields(text);
+    if (!card) return null;
+    if (titles && titles.test(card.title))         return { card, reason: `Universal: Blocked title keyword - ${card.title}` };
+    if (companies && companies.test(card.company)) return { card, reason: `Universal: Blocked company - ${card.company}` };
+    if (industries && industries.test(card.tags))  return { card, reason: 'Universal: Blocked industry domain' };
+    return null;
+  };
 }
 
 // ── Popup dismissal ───────────────────────────────────────────────────────────
@@ -181,10 +183,12 @@ async function sortTopMatched(win) {
 
 /**
  * Scroll the results panel, harvest job IDs + match scores.
- * Stops when MIN_MATCH_PCT is hit three consecutive times.
+ * Returns { listings, avoided }: listings to open, and cards an Avoid rule
+ * already rejects (see avoidOnCard), as records ready for eval.js.
  */
-async function collectListingUrls(win, minPct, seen, cardExcludeRe, scrollPauseMs, signal, passControl = null) {
+async function collectListingUrls(win, minPct, seen, avoid, scrollPauseMs, signal, passControl = null) {
   const results = [];
+  const avoided = [];
   let stall = 0;  // consecutive scroll passes that loaded no new cards (end guard)
 
   while (true) {
@@ -218,7 +222,19 @@ async function collectListingUrls(win, minPct, seen, cardExcludeRe, scrollPauseM
       // selected window is collected (filtering happens later in eval).
       if (pct !== null && pct < minPct) continue;
 
-      if (cardExcludeRe && cardExcludeRe.test(text)) continue;
+      // The Jobright page stands in for the apply link, so the role has a link
+      // in the results and later runs skip it like any role already shown.
+      const hit = avoid(text);
+      if (hit) {
+        const url = `https://jobright.ai/jobs/info/${jid}`;
+        avoided.push({
+          jid, url, match_pct: pct, card_text: text,
+          company: hit.card.company, title: hit.card.title, location: hit.card.location,
+          work_type: hit.card.work_type || null, salary: hit.card.salary || null,
+          ats_url: url, error: null, avoided: hit.reason,
+        });
+        continue;
+      }
 
       results.push({
         jid,
@@ -269,12 +285,12 @@ async function collectListingUrls(win, minPct, seen, cardExcludeRe, scrollPauseM
     // a container height that keeps jittering at the end of a long list).
     stall = newSeenThisPass === 0 ? stall + 1 : 0;
     if ((newH === prevH && newSeenThisPass === 0) || stall >= 4) {
-      console.log(`    End of results - ${results.length} listings collected (>= ${minPct}% match)`);
-      return results;
+      console.log(`    End of results - ${results.length} listings collected (>= ${minPct}% match), ${avoided.length} rejected from the card`);
+      return { listings: results, avoided };
     }
   }
 
-  return results;
+  return { listings: results, avoided };
 }
 
 // ── Detail extraction ─────────────────────────────────────────────────────────
@@ -474,7 +490,7 @@ async function fetchDetailsPool(listings, nWorkers, signal, onTick, passControl 
 
 // ── One search pass ───────────────────────────────────────────────────────────
 
-async function runSearch(searchCfg, minPct, scrollPauseMs, nWorkers, cardExcludeRe, seen, signal, onProgress, passControl = null) {
+async function runSearch(searchCfg, minPct, scrollPauseMs, nWorkers, avoid, seen, signal, onProgress, passControl = null) {
   console.log(`\n  ${'='.repeat(56)}`);
   console.log(`  Pass: ${searchCfg.label}`);
   console.log(`  URL:  ${searchCfg.url}`);
@@ -498,14 +514,15 @@ async function runSearch(searchCfg, minPct, scrollPauseMs, nWorkers, cardExclude
     await sortTopMatched(win);
 
     console.log(`    Collecting listings >= ${minPct}% match...`);
-    const listings = await collectListingUrls(win, minPct, seen, cardExcludeRe, scrollPauseMs, signal, passControl);
+    const { listings, avoided } = await collectListingUrls(win, minPct, seen, avoid, scrollPauseMs, signal, passControl);
     win.destroy();
 
     // If the pass was skipped during collection, roll over with nothing.
-    if (!listings.length || signal?.aborted || passControl?.abort) return [];
+    if (signal?.aborted || passControl?.abort) return [];
 
     // Tag each listing with the current search pass
-    for (const l of listings) l.search_pass = searchCfg.id;
+    for (const l of [...listings, ...avoided]) l.search_pass = searchCfg.id;
+    if (!listings.length) return avoided;
 
     console.log(`    ${listings.length} listings -> extracting details (${nWorkers} workers)...`);
     const results = await fetchDetailsPool(listings, nWorkers, signal, (done, tot, detail) => {
@@ -513,7 +530,7 @@ async function runSearch(searchCfg, minPct, scrollPauseMs, nWorkers, cardExclude
       if (onProgress) onProgress(`Pass ${searchCfg.label}: ${done}/${tot}`, done / tot);
     }, passControl);
     console.log(`\n    ${results.length} records extracted`);
-    return results;
+    return [...results, ...avoided];
   } catch (err) {
     if (!win.isDestroyed()) win.destroy();
     throw err;
@@ -524,6 +541,7 @@ async function runSearch(searchCfg, minPct, scrollPauseMs, nWorkers, cardExclude
 
 /**
  * run({ cfg, daysAgo, signal, onProgress }) -> Array of job records
+ *   onProgress(message, share)  share is how far the run is, 0 to 1
  */
 async function run({ cfg, daysAgo = 7, signal, onProgress, passControl = null }) {
   const emit = (msg, pct) => { if (onProgress) onProgress(msg, pct); };
@@ -532,7 +550,7 @@ async function run({ cfg, daysAgo = 7, signal, onProgress, passControl = null })
   const minPct        = settings.min_match_pct  ?? 60;
   const scrollPause   = settings.scroll_pause_ms ?? 1800;
   const nWorkers      = Math.max(1, settings.detail_workers ?? 6);
-  const cardExcludeRe = buildCardExcludeRe(cfg.title_filters?.card_exclude || []);
+  const avoid         = avoidOnCard(cfg);
 
   const searches = buildSearches(cfg, daysAgo);
   console.log(`\nJobright Scraper - ${searches.length} pass(es): ${searches.map(s => s.id).join(', ')}`);
@@ -549,7 +567,7 @@ async function run({ cfg, daysAgo = 7, signal, onProgress, passControl = null })
     // pass should not lose the listings already gathered by other passes.
     try {
       const results = await runSearch(
-        search, minPct, scrollPause, nWorkers, cardExcludeRe,
+        search, minPct, scrollPause, nWorkers, avoid,
         seen, signal,
         (msg, pct) => emit(msg, (passIdx + pct) / searches.length),
         passControl,

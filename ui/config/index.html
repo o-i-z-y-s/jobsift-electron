@@ -128,23 +128,50 @@
   .tag-input { background: none; border: none; outline: none; color: var(--text);
                font-size: 13px; min-width: 140px; flex: 1; padding: 2px 4px; }
 
-  /* ── KV inputs (ATS boards) ── */
-  .kv-col-header { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px;
-                   margin-bottom: 4px; padding: 0 2px; }
-  .kv-col-header span { font-size: 11px; color: var(--muted); text-transform: uppercase;
-                        letter-spacing: .04em; font-weight: 600; }
-  .kv-col-header span:last-child { width: 26px; }
-  .kv-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: center; margin-bottom: 8px; }
-  .kv-row input { margin: 0; }
+  /* ── Row delete and add buttons ── */
   .kv-del { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1; }
   .kv-del:hover { color: var(--danger); }
   .btn-add-row { background: none; border: 1px dashed var(--border); color: var(--muted);
                  padding: 5px 14px; border-radius: 5px; font-size: 12px; cursor: pointer; margin-top: 6px; }
   .btn-add-row:hover { border-color: var(--accent); color: var(--accent); }
 
-  /* ── Workday Direct cards ── */
-  .wd-card { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 14px; margin-bottom: 10px; }
-  .wd-card .col3 { margin-bottom: 0; }
+  /* ── Roles table ── */
+  .role-row { display: grid; grid-template-columns: minmax(160px, 2fr) 130px 64px minmax(160px, 2fr) 140px 26px; gap: 10px;
+              align-items: center; padding: 5px 4px; border-bottom: 1px solid var(--border); }
+  .role-row.role-head span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+  .role-row input[type=text], .role-row select { margin: 0; padding: 5px 8px; font-size: 13px; }
+  .role-row .role-search { justify-self: center; width: 16px; height: 16px; }
+  .role-row.unaccepted .role-title { border-color: var(--flag); }
+  .role-tracks { display: flex; flex-wrap: wrap; gap: 4px; }
+  .track-chip { font-size: 11px; padding: 2px 8px; border-radius: 10px; cursor: pointer; border: 1px solid var(--border);
+                background: none; color: var(--muted); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .track-chip.on { background: color-mix(in srgb, var(--accent) 18%, transparent); border-color: var(--accent); color: var(--text); }
+  .role-fit-sep { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-weight: 700; padding: 12px 4px 2px; }
+
+  /* ── Company boards ── */
+  .board-add { display: flex; gap: 8px; align-items: center; max-width: 900px; }
+  .board-add input[type=text] { flex: 1; }
+  .board-add select { width: 140px; flex: none; }
+  .board-add button { flex: none; padding: 7px 18px; font-size: 13px; }
+  .board-row { display: grid; grid-template-columns: 1.4fr .8fr 1.4fr 1.2fr 26px; gap: 10px; align-items: center;
+               padding: 7px 10px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .board-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .board-head { margin-top: 18px; }
+  .board-head span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+  .board-row .mono { font-family: monospace; font-size: 12px; color: var(--muted); }
+  .st-ok { color: var(--green); }
+  .st-warn { color: var(--flag); }
+  .st-muted { color: var(--muted); }
+  .conn-row [title] { cursor: help; }
+  .board-result { min-height: 18px; margin-top: 6px; }
+  .board-result.ok { color: var(--green); }
+  .board-result.err { color: var(--flag); }
+  .conn-table { max-height: 420px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
+  .conn-row { display: grid; grid-template-columns: 1.6fr 110px 2fr; gap: 10px; padding: 6px 12px; font-size: 13px;
+              border-bottom: 1px solid var(--border); }
+  .conn-row:last-child { border-bottom: none; }
+  .conn-row.head { position: sticky; top: 0; background: var(--surface); font-size: 11px; color: var(--muted);
+                   text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
 
   /* ── Checkbox ── */
   .checkbox-field { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
@@ -178,6 +205,15 @@
   .wiz-step { display:flex; flex-direction:column; flex:1; overflow-y:auto; }
   .wiz-card h2 { font-size:22px; margin-bottom:10px; }
   .wiz-card .wiz-sub { color:var(--muted); font-size:14px; line-height:1.6; margin-bottom:28px; }
+  .dropzone { flex:1; min-height:180px; margin-top:24px; border:2px dashed var(--border); border-radius:12px;
+              display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px;
+              cursor:pointer; text-align:center; padding:24px; transition:border-color .15s, background .15s; }
+  .dropzone:hover, .dropzone:focus, .dropzone.over { border-color:var(--accent); outline:none;
+              background:color-mix(in srgb, var(--accent) 6%, transparent); }
+  .dropzone.done { border-style:solid; border-color:var(--green); }
+  .dropzone .dz-icon { font-size:30px; }
+  .dropzone .dz-main { font-size:16px; font-weight:600; color:var(--text); }
+  .dropzone .dz-sub { font-size:13px; color:var(--muted); }
   .wiz-nav { display:flex; align-items:center; gap:10px; margin-top:auto; padding-top:28px; position:sticky; bottom:0; background:var(--surface); }
   .wiz-nav .spacer { flex:1; }
   .btn-wiz-primary { background:var(--accent); color:#fff; border:none; padding:10px 26px;
@@ -196,8 +232,6 @@
   details > summary { list-style: none; }
   details > summary::-webkit-details-marker { display: none; }
   #wizard label { font-size:13px; }
-  .wiz-kv-row { display:grid; grid-template-columns:100px 1fr 1fr auto; gap:8px; align-items:center; margin-bottom:8px; }
-  .wiz-kv-row input { margin:0; }
   /* ── Shared text and layout helpers ── */
   .hint { color: var(--muted); font-size: 12px; line-height: 1.55; margin-bottom: 10px; }
   .hint strong { color: var(--text); }
@@ -215,6 +249,15 @@
   .fold > summary { cursor: pointer; font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase;
                     letter-spacing: .06em; padding: 6px 0; user-select: none; }
   .fold[open] > summary { margin-bottom: 8px; }
+  /* A plus sign that turns into a minus once the section is open, so the
+     summary reads as something to click. */
+  .fold.expander > summary { display: inline-flex; align-items: center; gap: 6px; }
+  .fold.expander > summary::before { content: ''; flex: none; width: 16px; height: 16px; box-sizing: border-box;
+                                     border: 1px solid currentColor; border-radius: 4px;
+                                     background: linear-gradient(currentColor, currentColor) center / 8px 2px no-repeat,
+                                                 linear-gradient(currentColor, currentColor) center / 2px 8px no-repeat; }
+  .fold.expander[open] > summary::before { background: linear-gradient(currentColor, currentColor) center / 8px 2px no-repeat; }
+  .fold.expander > summary:hover { color: var(--accent); }
   .row-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin-bottom: 12px; }
   .row-card .row-head { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
 </style>
@@ -229,10 +272,11 @@
 </header>
 
 <nav>
-  <button class="active" data-tab="roles" onclick="showTab('roles',this)">Roles</button>
-  <button data-tab="tracks" onclick="showTab('tracks',this)">Tracks</button>
+  <button class="active" data-tab="tracks" onclick="showTab('tracks',this)">Tracks</button>
+  <button data-tab="roles" onclick="showTab('roles',this)">Roles</button>
   <button data-tab="avoid" onclick="showTab('avoid',this)">Avoid</button>
   <button data-tab="sources" onclick="showTab('sources',this)">Sources</button>
+  <button data-tab="connections" onclick="showTab('connections',this)">Connections</button>
   <button data-tab="settings" onclick="showTab('settings',this)">Settings</button>
 </nav>
 
@@ -244,13 +288,24 @@
 </div>
 
 <!-- ═══════════════════════ ROLES ═══════════════════════ -->
-<div id="tab-roles" class="tab active">
+<div id="tab-roles" class="tab">
   <h2>Roles you&rsquo;re looking for</h2>
   <p class="hint">A job is considered only if its title contains one of these roles. When several match, the longest
-    (most specific) one counts, so you can list a general role as Good and a more specific one as Ideal.</p>
-  <div class="tier-row"><div class="tier-label">Ideal<span class="pts" data-rule="role-ideal"></span></div><div class="tag-section" id="tag-roles-ideal"></div></div>
-  <div class="tier-row"><div class="tier-label">Good<span class="pts" data-rule="role-good"></span></div><div class="tag-section" id="tag-roles-good"></div></div>
-  <div class="tier-row"><div class="tier-label">Acceptable<span class="pts" data-rule="role-acceptable"></span></div><div class="tag-section" id="tag-roles-acceptable"></div></div>
+    (most specific) one counts, so you can list a general role as Good and a more specific one as Ideal.
+    <strong>Fit</strong>: <span id="fit-explain"></span> <strong>Search</strong>: each run searches for it on
+    Jobright and on the company boards searched by title (Workday, Eightfold, and Oracle); leave it off for a role to accept only
+    when another search turns it up. <strong>Tracks</strong>: the tracks that accept it. <strong>Dashboard tab</strong>: where its
+    jobs are grouped in your results.</p>
+  <div class="warn" id="role-warn" style="display:none;margin:0 0 10px"></div>
+  <div class="role-row role-head"><span>Role</span><span>Fit</span><span>Search</span><span>Tracks</span><span>Dashboard tab</span><span></span></div>
+  <div id="roles-table"></div>
+  <datalist id="role-type-options"></datalist>
+  <div class="board-add" style="margin-top:10px">
+    <input type="text" id="role-add-title" placeholder="Add a role, for example &ldquo;data analyst&rdquo;" onkeydown="if(event.key==='Enter')addRole()">
+    <select id="role-add-fit"></select>
+    <button class="btn-secondary" id="role-add-btn" onclick="addRole()">Add</button>
+  </div>
+  <p class="hint" id="search-plan" style="margin-top:10px"></p>
 
   <h3>Industries</h3>
   <p class="hint">Found anywhere in the posting. Leave both empty if your field is unambiguous.</p>
@@ -259,23 +314,17 @@
 
   <h3>Skills</h3>
   <p class="hint">Words that make a posting a better fit when they appear in it. Words found in nearly every posting add little.</p>
-  <div class="tier-row"><div class="tier-label">Skills<span class="pts" data-rule="skills"></span></div><div class="tag-section" id="tag-skills"></div></div>
+  <div class="tier-row"><div class="tier-label">Skills</div><div class="tag-section" id="tag-skills"></div></div>
 
   <h3>How the match score works</h3>
   <div class="rules" id="rules-box">Loading the scoring rules&hellip;</div>
 
-  <h2 id="role-types-section" style="margin-top:32px">Role Types <span style="color:var(--muted);font-size:12px;font-weight:400">(dashboard grouping, drag to reorder)</span></h2>
-  <p class="hint">Role types group jobs on the dashboard: each appears as a <strong>Role Type</strong> checkbox and as a tab above the results.
-    They do not affect scoring. Types are checked top to bottom and the first whose keywords appear in the job title wins.
-    A type with no keywords catches everything left over and is <strong>always moved to the bottom</strong> on save.</p>
-  <div id="rolecats-list"></div>
-  <button class="btn-add-row" onclick="addRoleCat()" style="margin-top:8px">+ Add Role Type</button>
 </div>
 
 <!-- ═══════════════════════ TRACKS ═══════════════════════ -->
-<div id="tab-tracks" class="tab">
+<div id="tab-tracks" class="tab active">
   <h2>Tracks <span style="color:var(--muted);font-size:12px;font-weight:400">(drag to reorder priority)</span></h2>
-  <p class="hint">A track is where you would work and what it has to pay. Every job is checked against every track
+  <p class="hint">A track is work location, type, arrangement and what it has to pay. Every job is checked against every track
     from top to bottom, and the first track that accepts it wins.</p>
 
   <div class="field-row col4">
@@ -291,14 +340,16 @@
 
   <h3 style="margin-top:32px">Target companies <span style="font-weight:400;text-transform:none;letter-spacing:0">(all tracks)</span></h3>
   <p class="hint">Companies you especially want to work for. Their roles are marked &ldquo;Target company&rdquo; in your results,
-    and a track&rsquo;s salary allowance (under More options for this track) lowers its pay floor for them. They are not scored higher.</p>
+    and a track&rsquo;s wiggle room (under More options for this track) lowers its pay floor for them. They are not scored higher.</p>
   <div id="tag-target_companies" class="tag-section"></div>
 </div>
 
 <!-- ═══════════════════════ AVOID ════════════════════════ -->
 <div id="tab-avoid" class="tab">
   <h2>Avoid</h2>
-  <p class="hint">A job matching anything here is rejected on every track, before it is scored.</p>
+  <p class="hint">A job matching anything here is rejected on every track, before it is scored. Titles, companies, and
+    industries are checked on Jobright&rsquo;s preview card first, so a matching posting is not even opened; it is still
+    listed with your rejected roles.</p>
 
   <h3>Titles</h3>
   <p class="hint">Reject when the title contains any of these.</p>
@@ -376,13 +427,7 @@
 <div id="tab-sources" class="tab">
   <h2>Sources</h2>
 
-  <h3>Jobright searches</h3>
-  <p class="hint"><strong>Jobright.ai is searched once per row.</strong> The job category must match a category in Jobright&rsquo;s own search filter.
-    &ldquo;Near my in-person tracks&rdquo; runs once for each onsite or hybrid track that has a location, within that track&rsquo;s radius.</p>
-  <div id="jobright-passes-list"></div>
-  <button class="btn-add-row" onclick="addJobrightPass()" style="margin-top:8px">+ Add Search</button>
-
-  <div class="field-row col4" style="margin-top:20px">
+  <div class="field-row col4">
     <div class="field">
       <label>Lowest Jobright match % to open</label>
       <input type="number" id="min_match_pct" min="0" max="100">
@@ -391,48 +436,45 @@
   <div class="warn">Jobright cards below this match % are never opened, so JobSift never sees them. If roles you expect are missing,
     lower this first. Jobright&rsquo;s match % comes from your Jobright profile, not from your settings here.</div>
 
-  <h3>Skip Jobright cards</h3>
-  <p class="hint">Checked against the Jobright card preview <em>before</em> the full posting is opened. Faster than rejecting
-    later, but a skipped card never appears in your results, not even as rejected.</p>
-  <div id="tag-card_exclude" class="tag-section"></div>
-
   <hr style="margin-top:28px">
-  <h3>Greenhouse</h3>
-  <p class="hint">Enter each company&rsquo;s board slug, the identifier at the end of its job board URL.
-    Example: <code>https://job-boards.greenhouse.io/<strong>acme</strong></code> &rarr; slug is <strong>acme</strong>.
-    Paste a full URL into the slug field and the slug is extracted automatically.</p>
-  <div class="kv-col-header"><span>Company Name</span><span>Greenhouse Slug</span><span></span></div>
-  <div id="kv-greenhouse"></div>
-  <button class="btn-add-row" onclick="addKvRow('greenhouse')">+ Add</button>
+  <h3>Company boards</h3>
+  <p class="hint">Companies whose job boards on Greenhouse, Lever, Ashby, Workday, Eightfold, Oracle, Gem, iCIMS, Rippling, or
+    Workable are searched directly. This catches roles before, or instead of, appearing on Jobright. Type a company name and
+    press <strong>Add</strong>: JobSift looks for its public job board. Workday, Oracle, and iCIMS boards can&rsquo;t be found
+    from a name, so for those, and for any company not found by name, add the company&rsquo;s careers page link too.</p>
+  <div id="board-editor"></div>
+</div>
 
-  <h3>Lever</h3>
-  <p class="hint">Example: <code>https://jobs.lever.co/<strong>acme</strong></code> &rarr; slug is <strong>acme</strong>.</p>
-  <div class="kv-col-header"><span>Company Name</span><span>Lever Slug</span><span></span></div>
-  <div id="kv-lever"></div>
-  <button class="btn-add-row" onclick="addKvRow('lever')">+ Add</button>
+<!-- ═══════════════════════ CONNECTIONS ═════════════════ -->
+<div id="tab-connections" class="tab">
+  <h2>Connections</h2>
+  <p class="hint">Import the connections you export from LinkedIn (Settings &rarr; Data privacy &rarr; Download your data) and
+    JobSift marks roles at companies where you know someone. The file stays on this device. JobSift keeps only each
+    person&rsquo;s name and company, and uses them only to show you matches.</p>
 
-  <h3>Ashby</h3>
-  <p class="hint">Example: <code>https://jobs.ashbyhq.com/<strong>acme</strong></code> &rarr; slug is <strong>acme</strong>.</p>
-  <div class="kv-col-header"><span>Company Name</span><span>Ashby Slug</span><span></span></div>
-  <div id="kv-ashby"></div>
-  <button class="btn-add-row" onclick="addKvRow('ashby')">+ Add</button>
+  <div class="row-card" id="conn-status">
+    <div id="conn-summary" style="font-size:13px"></div>
+    <div style="display:flex;gap:10px;margin-top:12px">
+      <button class="btn-secondary" id="conn-import-btn" onclick="importConnections()">Import LinkedIn connections</button>
+      <button class="btn-danger" id="conn-remove-btn" onclick="removeConnections()" style="display:none">Remove</button>
+    </div>
+  </div>
 
-  <h3>Workday search terms</h3>
-  <p class="hint">One term per line. Each Workday board is searched once per term. Leave empty to use your Ideal and Good roles.</p>
-  <textarea id="workday_search_terms" rows="4" style="width:100%;max-width:480px;font-family:monospace;font-size:13px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:5px;padding:7px 10px"></textarea>
+  <h3>Searching their companies</h3>
+  <div class="checkbox-field">
+    <input type="checkbox" id="conn_search_companies" onchange="onConnectionSearchToggle()">
+    <label for="conn_search_companies">Also search my connections&rsquo; companies for jobs</label>
+  </div>
+  <p class="hint">Searches each company&rsquo;s own job board when it&rsquo;s on a hiring system listed on the Sources tab, which
+    catches roles Jobright misses. Only company names are sent to those sites.</p>
+  <div class="warn" id="conn-delay" style="display:none"></div>
+  <div id="conn-check" style="display:none;align-items:center;gap:12px;margin:10px 0 16px">
+    <button class="btn-secondary" id="conn-check-btn" onclick="toggleBoardCheck()">Check them now</button>
+    <span class="hint" id="conn-check-status" style="margin:0"></span>
+  </div>
 
-  <h3>Workday direct <span style="font-weight:400;text-transform:none;letter-spacing:0">(confirmed endpoint)</span></h3>
-  <p class="hint">All four values come from the company&rsquo;s Workday careers URL.
-    Example: <code>https://<strong>acme</strong>.wd5.myworkdayjobs.com/<strong>acmecareers</strong></code>
-    &rarr; Base URL <code>https://acme.wd5.myworkdayjobs.com</code>, Tenant <code>acme</code>, Site <code>acmecareers</code>.</p>
-  <div id="wd-direct-list"></div>
-  <button class="btn-add-row" onclick="addWdDirect()">+ Add Workday Direct</button>
-
-  <h3>Workday companies <span style="font-weight:400;text-transform:none;letter-spacing:0">(discovery)</span></h3>
-  <p class="hint">Companies where you only have the careers page URL. The endpoint is worked out automatically, which is less reliable than Workday direct.</p>
-  <div class="kv-col-header"><span>Company Name</span><span>Careers Page URL</span><span></span></div>
-  <div id="kv-workday_companies"></div>
-  <button class="btn-add-row" onclick="addKvRow('workday_companies')">+ Add</button>
+  <h3 id="conn-companies-head" style="display:none">Their companies</h3>
+  <div id="conn-companies"></div>
 </div>
 
 <!-- ═══════════════════════ SETTINGS ════════════════════ -->
@@ -513,7 +555,7 @@
         so you can focus on the best matches.<br><br>
         Setup takes about <strong>5 minutes</strong>, and everything can be changed later.<br><br>
         <strong>Before you begin:</strong><br>
-        <strong>1.</strong> <strong>A Chromium-based browser.</strong> Microsoft Edge (pre-installed on Windows) works, and so does Google Chrome.<br>
+        <strong>1.</strong> <strong>A Chromium-based browser.</strong><br>
         <strong>2.</strong> <strong>A Jobright.ai account with a completed profile.</strong> Jobright&rsquo;s match % comes from your profile,
         and uploading your resume is the quickest way to fill it in.
       </div>
@@ -525,31 +567,9 @@
     </div>
 
     <div class="wiz-step" id="wiz-s2" style="display:none">
-      <h2>&#128269; What roles are you looking for?</h2>
-      <div class="wiz-sub">
-        A job is considered only if its title contains one of these. Sort them by how much you want them.
-        Type a role and press Enter.
-      </div>
-      <div class="hint" id="wiz-roles-points" style="margin-bottom:12px"></div>
-      <div class="tier-row"><div class="tier-label">Ideal</div><div class="tag-section" id="wiz-tag-ideal"></div></div>
-      <div class="tier-row"><div class="tier-label">Good</div><div class="tag-section" id="wiz-tag-good"></div></div>
-      <div class="tier-row"><div class="tier-label">Acceptable</div><div class="tag-section" id="wiz-tag-acceptable"></div></div>
-      <div class="field" style="margin-top:18px">
-        <label>Titles to avoid <span style="color:var(--muted);font-weight:400">(reject when the title contains any of these)</span></label>
-        <div id="wiz-tag-block" class="tag-section"></div>
-      </div>
-      <div class="wiz-nav">
-        <button class="btn-wiz-secondary" onclick="wizGo(1)">&larr; Back</button>
-        <div class="spacer"></div>
-        <button class="btn-wiz-skip" onclick="wizSkip()">Skip wizard</button>
-        <button class="btn-wiz-primary" onclick="wizGo(3)">Next &rarr;</button>
-      </div>
-    </div>
-
-    <div class="wiz-step" id="wiz-s3" style="display:none">
       <h2>&#127919; Your first track</h2>
       <div class="wiz-sub">
-        A <strong>track</strong> is where you would work and what it has to pay. For example: <em>Remote, $90K+</em>
+        A <strong>track</strong> is work location, type, arrangement and what it has to pay. For example: <em>Remote, $90K+</em>
         and <em>Denver hybrid, $110K+</em>. Every job is checked against every track. You can add more tracks later.
       </div>
       <div class="field-row col2">
@@ -582,6 +602,28 @@
         </div>
       </div>
       <div class="wiz-nav">
+        <button class="btn-wiz-secondary" onclick="wizGo(1)">&larr; Back</button>
+        <div class="spacer"></div>
+        <button class="btn-wiz-skip" onclick="wizSkip()">Skip wizard</button>
+        <button class="btn-wiz-primary" onclick="wizGo(3)">Next &rarr;</button>
+      </div>
+    </div>
+
+    <div class="wiz-step" id="wiz-s3" style="display:none">
+      <h2>&#128269; What roles are you looking for?</h2>
+      <div class="wiz-sub">
+        A job is considered only if its title contains one of these. Sort them by how much you want them.
+        Type a role and press Enter.
+      </div>
+      <div class="hint" id="wiz-roles-points" style="margin-bottom:12px"></div>
+      <div class="tier-row"><div class="tier-label">Ideal</div><div class="tag-section" id="wiz-tag-ideal"></div></div>
+      <div class="tier-row"><div class="tier-label">Good</div><div class="tag-section" id="wiz-tag-good"></div></div>
+      <div class="tier-row"><div class="tier-label">Acceptable</div><div class="tag-section" id="wiz-tag-acceptable"></div></div>
+      <div class="field" style="margin-top:18px">
+        <label>Titles to avoid <span style="color:var(--muted);font-weight:400">(reject when the title contains any of these)</span></label>
+        <div id="wiz-tag-block" class="tag-section"></div>
+      </div>
+      <div class="wiz-nav">
         <button class="btn-wiz-secondary" onclick="wizGo(2)">&larr; Back</button>
         <div class="spacer"></div>
         <button class="btn-wiz-skip" onclick="wizSkip()">Skip wizard</button>
@@ -607,28 +649,14 @@
     </div>
 
     <div class="wiz-step" id="wiz-s5" style="display:none">
-      <h2>&#128269; Where to search</h2>
+      <h2>&#127970; Company job boards <span style="font-weight:400;font-size:14px;color:var(--muted)">(optional)</span></h2>
       <div class="wiz-sub">
-        Jobright.ai is searched by job category. These are pre-filled from your Ideal and Good roles; edit any that
-        Jobright names differently in its search filter. Company career pages (below, optional) catch postings that Jobright misses.
+        JobSift searches Jobright.ai for the roles you listed, wherever your tracks say you want to work. It can also search
+        companies&rsquo; own job boards on most major hiring systems, which catches postings Jobright misses.
+        Type a company name and press <strong>Add</strong>: JobSift looks for its public job board. For Workday, Oracle, and
+        iCIMS, also add the careers page link.
       </div>
-      <div class="field">
-        <label>Jobright job categories</label>
-        <div id="wiz-tag-jbtaxonomies" class="tag-section"></div>
-      </div>
-      <div class="field" style="margin-top:4px">
-        <label>Search</label>
-        <select id="wiz-jb-model" style="max-width:280px"></select>
-      </div>
-      <h3 style="margin-top:24px">Company career pages <span style="font-weight:400;font-size:12px;text-transform:none;letter-spacing:0">(optional)</span></h3>
-      <p class="hint">For Greenhouse, Lever or Ashby, enter the board slug from the careers URL
-        (<code>https://boards.greenhouse.io/<strong>acme</strong></code> &rarr; <strong>acme</strong>).</p>
-      <div id="wiz-ats-rows"></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
-        <button class="btn-add-row" onclick="wizAddAts('greenhouse')">+ Greenhouse</button>
-        <button class="btn-add-row" onclick="wizAddAts('lever')">+ Lever</button>
-        <button class="btn-add-row" onclick="wizAddAts('ashby')">+ Ashby</button>
-      </div>
+      <div id="wiz-board-editor"></div>
       <div class="wiz-nav">
         <button class="btn-wiz-secondary" onclick="wizGo(4)">&larr; Back</button>
         <div class="spacer"></div>
@@ -665,26 +693,18 @@
     </div>
 
     <div class="wiz-step" id="wiz-s7" style="display:none">
-      <h2>&#127970; Who posted it</h2>
+      <h2>&#129309; Your connections <span style="font-weight:400;font-size:14px;color:var(--muted)">(optional)</span></h2>
       <div class="wiz-sub">
-        Every role is labeled by who posted it, and the dashboard can filter by it:<br>
-        <strong>Employer</strong>: the hiring company itself.<br>
-        <strong>Staffing firm</strong>: an agency filling the role for a client. A real job, and sometimes the only way in.<br>
-        <strong>Job board</strong>: a site that copied the posting from somewhere else. Applying there rarely reaches the employer.<br><br>
-        The same job posted by several companies is shown once, keeping the employer&rsquo;s own posting when one is found.
+        If you export your connections from LinkedIn (Settings -&gt; Data privacy -&gt; Download your data), JobSift can mark jobs at companies where you know someone. Searching those companies&rsquo; job boards directly can be turned on later on the Connections tab.<br><br>
+        Your file stays on this device, no personal data is transferred out whatsoever, and JobSift uses only each person&rsquo;s name and company for the purpose of showing you matches.<br><br>
+        You can skip this or remove the file at any time from the Connections tab.
       </div>
-      <div class="field">
-        <label>Postings made by job boards and reposting sites <span style="color:var(--muted);font-weight:400">(they copy jobs from other sites)</span></label>
-        <select id="wiz-reposts" style="max-width:280px">
-          <option value="reject">Reject</option>
-          <option value="flag">Keep and flag</option>
-          <option value="off">Keep, no flag</option>
-        </select>
-      </div>
-      <div class="field" style="margin-top:14px">
-        <label>Staffing firms you know of <span style="color:var(--muted);font-weight:400">(optional; labeled, never rejected)</span></label>
-        <div id="wiz-tag-staffing" class="tag-section"></div>
-        <div class="hint" style="margin-top:4px">Firms that apply through staffing software are recognized without being listed.</div>
+      <div class="dropzone" id="wiz-conn-drop" role="button" tabindex="0"
+           onclick="importConnections().then(showWizConnections)"
+           onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}">
+        <div class="dz-icon">&#128196;</div>
+        <div class="dz-main" id="wiz-conn-main">Drop your LinkedIn Connections.csv here</div>
+        <div class="dz-sub" id="wiz-conn-sub">or click to choose the file</div>
       </div>
       <div class="wiz-nav">
         <button class="btn-wiz-secondary" onclick="wizGo(6)">&larr; Back</button>
@@ -697,17 +717,19 @@
     <div class="wiz-step" id="wiz-s8" style="display:none">
       <h2>&#127881; You&rsquo;re set up</h2>
       <div class="wiz-sub">
-        You set the roles you want, your first track, industries and skills, where to search, what to avoid, and how to treat
-        staffing firms and reposts.
+        You set your first track, the roles you want, industries and skills, company job boards, and what to avoid.
       </div>
       <div class="rules">
         <strong>Worth a look in the full editor:</strong>
         <ul style="margin:8px 0 0 16px">
           <li><strong>More tracks:</strong> on the Tracks tab, duplicate your track and change where it is or what it pays.</li>
           <li><strong>Each track&rsquo;s bar:</strong> which grades and employment types it accepts, and whether it needs an industry match.</li>
-          <li><strong>Who posted it:</strong> on the Avoid tab, the reposting sites and staffing firms JobSift recognizes.</li>
-          <li><strong>Role Types:</strong> on the Roles tab, group your results into dashboard tabs.</li>
-          <li><strong>More career pages:</strong> on the Sources tab.</li>
+          <li><strong>Staffing firms and reposts:</strong> roles from staffing firms are labeled, and listings copied by job boards are
+            left out. Both can be changed on the Avoid tab.</li>
+          <li><strong>Roles:</strong> on the Roles tab, choose which roles are searched for, which tracks accept each one, and the
+            dashboard tab its jobs appear under.</li>
+          <li><strong>Connections:</strong> import or remove your LinkedIn connections, and check their companies&rsquo; job boards,
+            on the Connections tab.</li>
         </ul>
       </div>
       <div class="wiz-nav">
@@ -756,7 +778,9 @@ Promise.all([window.electronAPI.loadConfig(), window.electronAPI.getScoringRules
   .then(([data, rules]) => {
     CONFIG = data; RULES = rules;
     normalize();
-    render(); setStatus('Loaded', 'ok'); initWizard(); loadSchedule(); handleGoto();
+    buildBoardEditor('board-editor', 'board');
+    buildBoardEditor('wiz-board-editor', 'wizboard');
+    render(); setStatus('Loaded', 'ok'); initWizard(); loadSchedule(); loadConnections(); handleGoto();
   })
   .catch(e => setStatus('Load failed: ' + e.message, 'err'));
 
@@ -765,17 +789,22 @@ Promise.all([window.electronAPI.loadConfig(), window.electronAPI.getScoringRules
 function normalize() {
   const c = CONFIG;
   for (const k of ['roles', 'industries', 'skills', 'tracks']) if (!Array.isArray(c[k])) c[k] = [];
-  c.title_filters     = { title_block: [], card_exclude: [], ...(c.title_filters || {}) };
+  c.title_filters     = { title_block: [], ...(c.title_filters || {}) };
   c.company_lists     = { target_companies: [], blocked_companies: [], staffing_firms: [], ...(c.company_lists || {}) };
   c.sources           = { ...JSON.parse(JSON.stringify(RULES.defaultSources)), ...(c.sources || {}) };
   c.rejection_filters = { blocked_industries: [], domain_experience_industries: [], description_blockers: [], ...(c.rejection_filters || {}) };
-  c.role_categories   = { categories: [], ...(c.role_categories || {}) };
-  c.jobright_searches = { passes: [], ...(c.jobright_searches || {}) };
-  c.ats_boards        = { greenhouse: {}, lever: {}, ashby: {}, workday_direct: {}, workday_companies: {}, workday_search_terms: [], ...(c.ats_boards || {}) };
+  c.ats_boards        = { greenhouse: {}, lever: {}, ashby: {}, gem: {}, rippling: {}, workable: {}, workday_direct: {},
+                          oracle: {}, eightfold: {}, icims: {}, workday_companies: {}, ...(c.ats_boards || {}) };
   c.settings          = { ...(c.settings || {}) };
   c.pipeline          = { search_term: '', ...(c.pipeline || {}) };
-  for (const t of c.tracks) for (const k of ['work_types', 'employment_types', 'title_require', 'title_block', 'excluded_companies', 'target_companies']) {
+  c.connections       = { ...RULES.defaultConnections, ...(c.connections || {}) };
+  for (const t of c.tracks) for (const k of ['work_types', 'employment_types', 'title_block', 'excluded_companies', 'blocked_industries', 'target_companies']) {
     if (!Array.isArray(t[k])) t[k] = [];
+  }
+  c.roles = c.roles.filter(r => r && typeof r.title === 'string');
+  for (const r of c.roles) {
+    if (!PRIORITIES.includes(r.priority)) r.priority = 'acceptable';
+    if (typeof r.search !== 'boolean') r.search = searchedByDefault(r.priority);
   }
 }
 
@@ -828,6 +857,7 @@ function showTab(id, btn) {
   document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
   $('tab-' + id).classList.add('active');
   btn.classList.add('active');
+  if (id === 'roles') { renderRoleTable(); refreshSearchPlan(); }   // tracks may have changed
 }
 function setStatus(msg, cls) { const el = $('status'); el.textContent = msg; el.className = cls || ''; }
 function toast(msg, isErr) {
@@ -843,12 +873,11 @@ function render() {
   renderMigrationNotice();
   renderRoles();
   renderRules();
-  renderRoleCats();
   renderTracks();
   renderLists();
   renderLimits();
-  renderJobright();
   renderAts();
+  renderConnectionSettings();
   renderSettings();
 }
 
@@ -865,8 +894,10 @@ function dismissMigrationNotice() {
 }
 
 // ── Tag widget ──────────────────────────────────────────────────────────────
-// Edits `arr` in place; the array is what gets saved.
-function buildTagWidget(container, arr) {
+// Edits `arr` in place; the array is what gets saved. onChange, if given, runs
+// after each addition or removal.
+function buildTagWidget(container, arr, onChange) {
+  const changed = () => { if (onChange) onChange(); };
   container.innerHTML = '';
   const wrap = document.createElement('div');
   wrap.className = 'tag-wrap';
@@ -880,6 +911,7 @@ function buildTagWidget(container, arr) {
       const idx = arr.indexOf(val);
       if (idx > -1) arr.splice(idx, 1);
       tag.remove();
+      changed();
     };
     wrap.insertBefore(tag, inp);
   };
@@ -888,13 +920,14 @@ function buildTagWidget(container, arr) {
     if (!v || arr.some(x => x.toLowerCase() === v.toLowerCase())) return;
     arr.push(v);
     renderTag(v);
+    changed();
   };
 
   inp.className = 'tag-input';
   inp.placeholder = 'Add item, press Enter…';
   inp.onkeydown = (e) => {
     if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTag(inp.value); inp.value = ''; }
-    else if (e.key === 'Backspace' && !inp.value && arr.length) { arr.pop(); wrap.querySelector('.tag:last-of-type')?.remove(); }
+    else if (e.key === 'Backspace' && !inp.value && arr.length) { arr.pop(); wrap.querySelector('.tag:last-of-type')?.remove(); changed(); }
   };
   inp.onblur = () => { if (inp.value.trim()) { addTag(inp.value); inp.value = ''; } };
   wrap.appendChild(inp);
@@ -903,32 +936,109 @@ function buildTagWidget(container, arr) {
   container.appendChild(wrap);
 }
 
-// ── Roles, industries, skills ───────────────────────────────────────────────
-// Stored as [{title, priority}] and [{name, strength}]; edited as one tag list
-// per priority or strength, and written back on save.
-const roleLists = { ideal: [], good: [], acceptable: [] };
+// ── Roles ───────────────────────────────────────────────────────────────────
+// Stored as [{ title, priority, search, tracks, type }] (see criteria.js) and
+// edited in place, one row per role. tracks is left out while a role is on
+// every track, so a track added later accepts it too.
+const FIT_LABEL = { ideal: 'Ideal', good: 'Good', acceptable: 'Acceptable' };
+// A new role is searched for unless it is only Acceptable.
+const searchedByDefault = priority => priority !== 'acceptable';
+const trackKeys = () => CONFIG.tracks.map(t => t.key);
+const onTrack = (r, key) => !Array.isArray(r.tracks) || r.tracks.includes(key);
+const fitOptions = sel => PRIORITIES.map(p =>
+  `<option value="${p}"${p === sel ? ' selected' : ''}>${FIT_LABEL[p]}</option>`).join('');
+
+function renderRoleTable() {
+  const order = [...CONFIG.roles.keys()].sort((a, b) =>
+    PRIORITIES.indexOf(CONFIG.roles[a].priority) - PRIORITIES.indexOf(CONFIG.roles[b].priority) || a - b);
+  let html = '', fit = null;
+  for (const i of order) {
+    const r = CONFIG.roles[i];
+    if (r.priority !== fit) { fit = r.priority; html += `<div class="role-fit-sep">${FIT_LABEL[fit]}</div>`; }
+    const chips = CONFIG.tracks.map(t =>
+      `<button type="button" class="track-chip${onTrack(r, t.key) ? ' on' : ''}" data-key="${escHtml(t.key)}"
+         title="${escHtml(t.label || t.key)}" onclick="toggleRoleTrack(${i}, this.dataset.key)">${escHtml(t.label || t.key)}</button>`).join('');
+    html += `<div class="role-row" data-i="${i}">
+      <input type="text" class="role-title" value="${escHtml(r.title)}" onchange="setRole(${i}, 'title', this.value)">
+      <select onchange="setRole(${i}, 'priority', this.value)">${fitOptions(r.priority)}</select>
+      <input type="checkbox" class="role-search" title="Search for this role"${r.search ? ' checked' : ''} onchange="setRole(${i}, 'search', this.checked)">
+      <div class="role-tracks">${chips || '<span class="st-muted">No tracks yet</span>'}</div>
+      <input type="text" list="role-type-options" placeholder="Other" value="${escHtml(r.type || '')}" onchange="setRole(${i}, 'type', this.value)">
+      <button class="kv-del" title="Remove" onclick="removeRole(${i})">&times;</button>
+    </div>`;
+  }
+  $('roles-table').innerHTML = html || '<div class="hint" style="margin:8px 4px">No roles yet.</div>';
+  const types = [...new Set(CONFIG.roles.map(r => (r.type || '').trim()).filter(Boolean))].sort();
+  $('role-type-options').innerHTML = types.map(t => `<option value="${escHtml(t)}"></option>`).join('');
+  if (!$('role-add-fit').options.length) $('role-add-fit').innerHTML = fitOptions('good');
+}
+
+function setRole(i, field, value) {
+  const r = CONFIG.roles[i];
+  if (!r) return;
+  if (field === 'title') r.title = value.trim();
+  else if (field === 'type') { if (value.trim()) r.type = value.trim(); else delete r.type; }
+  else r[field] = value;
+  if (field === 'priority' || field === 'type') renderRoleTable();
+  refreshSearchPlan();
+}
+
+function toggleRoleTrack(i, key) {
+  const r = CONFIG.roles[i];
+  const on = new Set(Array.isArray(r.tracks) ? r.tracks : trackKeys());
+  if (on.has(key)) on.delete(key); else on.add(key);
+  const keys = trackKeys().filter(k => on.has(k));
+  if (keys.length === CONFIG.tracks.length) delete r.tracks; else r.tracks = keys;
+  renderRoleTable();
+  refreshSearchPlan();
+}
+
+function addRole() {
+  const title = $('role-add-title').value.trim();
+  if (!title) return;
+  const have = CONFIG.roles.find(r => r.title.toLowerCase() === title.toLowerCase());
+  if (have) { toast(`"${have.title}" is already listed as ${FIT_LABEL[have.priority]}`, true); return; }
+  const priority = $('role-add-fit').value;
+  CONFIG.roles.push({ title, priority, search: searchedByDefault(priority) });
+  $('role-add-title').value = '';
+  renderRoleTable();
+  refreshSearchPlan();
+}
+
+function removeRole(i) {
+  CONFIG.roles.splice(i, 1);
+  renderRoleTable();
+  refreshSearchPlan();
+}
+
+// ── Industries and skills ───────────────────────────────────────────────────
+// Stored as [{name, strength}]; edited as one tag list per strength.
 const industryLists = { strong: [], some: [] };
 
 function renderRoles() {
-  for (const p of PRIORITIES) {
-    roleLists[p] = CONFIG.roles.filter(r => r.priority === p).map(r => r.title);
-    buildTagWidget($('tag-roles-' + p), roleLists[p]);
-  }
+  renderRoleTable();
   for (const s of STRENGTHS) {
     industryLists[s] = CONFIG.industries.filter(i => i.strength === s).map(i => i.name);
     buildTagWidget($('tag-ind-' + s), industryLists[s]);
   }
   buildTagWidget($('tag-skills'), CONFIG.skills);
+  refreshSearchPlan();
 }
 function collectRoles() {
-  // A title listed under two priorities keeps the higher one.
+  // A blank title is dropped, and a title listed twice keeps its first row.
+  // Tracks since removed are dropped from each role.
   const seen = new Set();
-  CONFIG.roles = [];
-  for (const p of PRIORITIES) for (const title of roleLists[p]) {
-    if (seen.has(title.toLowerCase())) continue;
-    seen.add(title.toLowerCase());
-    CONFIG.roles.push({ title, priority: p });
-  }
+  const keys = trackKeys();
+  CONFIG.roles = CONFIG.roles.filter(r => {
+    const k = r.title.trim().toLowerCase();
+    if (!k || seen.has(k)) return false;
+    seen.add(k);
+    if (Array.isArray(r.tracks)) {
+      r.tracks = r.tracks.filter(t => keys.includes(t));
+      if (keys.length && r.tracks.length === keys.length) delete r.tracks;
+    }
+    return true;
+  });
   seen.clear();
   CONFIG.industries = [];
   for (const s of STRENGTHS) for (const name of industryLists[s]) {
@@ -938,12 +1048,18 @@ function collectRoles() {
   }
 }
 
+// What a role's fit is worth, in the same words on the Roles tab and in the wizard.
+function fitExplanation() {
+  const p = RULES.rolePoints;
+  return `every job gets a match score out of 100, and a title containing the role adds ${p.ideal} points for Ideal, ` +
+    `${p.good} for Good, or ${p.acceptable} for Acceptable. Pay, industry, and skills add the rest (see How the match score works, below).`;
+}
+
 function renderRules() {
   const R = RULES;
+  $('fit-explain').textContent = fitExplanation();
   const set = (key, text) => document.querySelectorAll(`[data-rule="${key}"]`).forEach(el => el.textContent = text);
-  for (const p of PRIORITIES) set('role-' + p, `${R.rolePoints[p]} points`);
   for (const s of STRENGTHS)  set('ind-' + s,  `${R.industryPoints[s]} points`);
-  set('skills', `${R.skillPoints} each, up to ${R.max.Skills}`);
   const [[gA, cA], [gB, cB], [gC, cC]] = R.gradeCutoffs;
   $('rules-box').innerHTML = `
     Each job gets a score out of 100 from up to four signals:
@@ -957,10 +1073,9 @@ function renderRules() {
     Each track decides which grades it accepts.`;
 }
 
-// ── Lists (Avoid tab, target companies, card skip) ──────────────────────────
+// ── Lists (Avoid tab, target companies) ─────────────────────────────────────
 const LISTS = {
   title_block:                  () => CONFIG.title_filters.title_block,
-  card_exclude:                 () => CONFIG.title_filters.card_exclude,
   target_companies:             () => CONFIG.company_lists.target_companies,
   blocked_companies:            () => CONFIG.company_lists.blocked_companies,
   staffing_firms:               () => CONFIG.company_lists.staffing_firms,
@@ -994,7 +1109,6 @@ function renderSettings() {
   $('min_match_pct').value        = s.min_match_pct ?? '';
   $('scroll_pause_ms').value      = s.scroll_pause_ms ?? '';
   $('detail_workers').value       = s.detail_workers ?? '';
-  $('workday_search_terms').value = CONFIG.ats_boards.workday_search_terms.join('\n');
   $('user_state').innerHTML       = stateOptions(CONFIG.user_state || '');
   $('user_state').style.color     = CONFIG.user_state ? 'var(--text)' : 'var(--muted)';
 }
@@ -1005,91 +1119,360 @@ function collectSettings() {
   s.min_match_pct    = num($('min_match_pct').value);
   s.scroll_pause_ms  = num($('scroll_pause_ms').value);
   s.detail_workers   = num($('detail_workers').value);
-  CONFIG.ats_boards.workday_search_terms = $('workday_search_terms').value.split('\n').map(x => x.trim()).filter(Boolean);
   CONFIG.user_state = $('user_state').value;
 }
 
-// ── Company career pages ────────────────────────────────────────────────────
-const SLUG_PATTERNS = {
-  greenhouse: /greenhouse\.io\/([^/?&#\s]+)/,
-  lever:      /lever\.co\/([^/?&#\s]+)/,
-  ashby:      /ashbyhq\.com\/([^/?&#\s]+)/,
+// ── Company boards ──────────────────────────────────────────────────────────
+// Shown as one list; saved in the config's per-system lists (ats_boards), so
+// existing setups load unchanged. A row is { company, ats, board } where board
+// is { slug } or an object of that system's fields (BOARD_FIELDS in boards.js);
+// a company added by its careers page link has careersUrl instead, and its
+// board is found on the next run.
+//
+// The same editor appears on the Sources tab ('board') and in the setup
+// wizard ('wizboard'); p is that prefix, used for its element ids.
+const SYSTEM_LABELS = {
+  greenhouse: 'Greenhouse', lever: 'Lever', ashby: 'Ashby', workday: 'Workday', eightfold: 'Eightfold',
+  oracle: 'Oracle', gem: 'Gem', icims: 'iCIMS', rippling: 'Rippling', workable: 'Workable',
 };
-const SLUG_LABELS = {
-  greenhouse:        'Slug (or paste a Greenhouse URL)',
-  lever:             'Slug (or paste a Lever URL)',
-  ashby:             'Slug (or paste an Ashby URL)',
-  workday_companies: 'Careers page URL',
-};
-function extractSlugOnBlur(input, platform) {
-  const pat = SLUG_PATTERNS[platform];
-  if (!pat) return;
-  input.addEventListener('blur', function () {
-    const v = this.value.trim();
-    const m = v.startsWith('http') && v.match(pat);
-    if (m) { this.value = m[1]; toast('Slug extracted ✓'); }
-  });
-}
-function renderAts() {
-  for (const k of ['greenhouse', 'lever', 'ashby', 'workday_companies']) {
-    $('kv-' + k).innerHTML = '';
-    Object.entries(CONFIG.ats_boards[k]).forEach(([name, val]) => addKvRowWith(k, name, val));
-  }
-  $('wd-direct-list').innerHTML = '';
-  Object.entries(CONFIG.ats_boards.workday_direct).forEach(([name, v]) => addWdDirectWith(name, v.base_url, v.tenant, v.site));
-}
-function addKvRow(board) { addKvRowWith(board, '', ''); }
-function addKvRowWith(board, name, val) {
-  const row = document.createElement('div');
-  row.className = 'kv-row';
-  row.innerHTML = `
-    <input type="text" class="kv-name" placeholder="Company name" value="${escHtml(name)}">
-    <input type="text" class="kv-val"  placeholder="${escHtml(SLUG_LABELS[board] || 'Value')}" value="${escHtml(val)}">
-    <button class="kv-del" title="Remove">&times;</button>`;
-  row.querySelector('.kv-del').onclick = () => row.remove();
-  extractSlugOnBlur(row.querySelector('.kv-val'), board);
-  $('kv-' + board).appendChild(row);
-}
-function addWdDirect() { addWdDirectWith('', '', '', ''); }
-function addWdDirectWith(name, base_url, tenant, site) {
-  const card = document.createElement('div');
-  card.className = 'wd-card';
-  card.innerHTML = `
-    <div class="field-row col2" style="margin-bottom:10px">
-      <div><label>Company Name</label>
-           <input type="text" class="wd-name" value="${escHtml(name)}" placeholder="e.g. Acme Corp"></div>
-      <div><label>Base URL (full Workday domain)</label>
-           <input type="text" class="wd-base_url" value="${escHtml(base_url)}" placeholder="https://company.wd5.myworkdayjobs.com"></div>
+const BOARDS = { board: { rows: [], status: {} }, wizboard: { rows: [], status: {} } };
+
+function buildBoardEditor(containerId, p) {
+  $(containerId).innerHTML = `
+    <div class="board-add">
+      <input type="text" id="${p}-add-name" placeholder="Company name" onkeydown="if(event.key==='Enter')addBoardByLookup('${p}')">
+      <input type="text" id="${p}-add-url" placeholder="Careers page link (optional)" onkeydown="if(event.key==='Enter')addBoardByLookup('${p}')">
+      <button class="btn-secondary" id="${p}-add-btn" onclick="addBoardByLookup('${p}')">Add</button>
     </div>
-    <div class="field-row col3">
-      <div><label>Tenant (subdomain prefix before .wd5)</label>
-           <input type="text" class="wd-tenant" value="${escHtml(tenant)}" placeholder="company"></div>
-      <div><label>Site (path ID after .com/ in the careers URL)</label>
-           <input type="text" class="wd-site" value="${escHtml(site)}" placeholder="CompanyCareers"></div>
-      <div style="display:flex;align-items:flex-end">
-           <button class="btn-danger" onclick="this.closest('.wd-card').remove()">Remove</button></div>
-    </div>`;
-  $('wd-direct-list').appendChild(card);
+    <div id="${p}-add-result" class="hint board-result"></div>
+
+    <div class="board-row board-head"><span>Company</span><span>Hiring system</span><span>Board</span><span>Status</span><span></span></div>
+    <div id="${p}-list"></div>
+    <div id="${p}-list-empty" class="hint" style="display:none">No company boards yet.</div>
+
+    <details class="fold expander" id="${p}-manual" style="margin-top:14px" open>
+      <summary>Add manually</summary>
+      <p class="hint">Paste the company&rsquo;s board link, for example <code>https://job-boards.greenhouse.io/<strong>acme</strong></code>.
+        For Greenhouse, Lever, Ashby, Gem, Rippling, and Workable the board name alone also works. For Workday, paste the board link
+        (<code>https://acme.wd5.myworkdayjobs.com/<strong>AcmeCareers</strong></code>) or the company&rsquo;s careers page link.
+        For Eightfold, Oracle, and iCIMS, paste a link to one of the company&rsquo;s job postings.</p>
+      <div class="board-add">
+        <input type="text" id="${p}-man-name" placeholder="Company name">
+        <select id="${p}-man-ats">
+          ${Object.entries(SYSTEM_LABELS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}
+        </select>
+        <input type="text" id="${p}-man-link" placeholder="Board link" onkeydown="if(event.key==='Enter')addBoardManually('${p}')">
+        <button class="btn-secondary" onclick="addBoardManually('${p}')">Add</button>
+      </div>
+    </details>`;
 }
-function collectAts() {
-  for (const board of ['greenhouse', 'lever', 'ashby', 'workday_companies']) {
-    const obj = {};
-    document.querySelectorAll(`#kv-${board} .kv-row`).forEach(row => {
-      const name = row.querySelector('.kv-name').value.trim();
-      if (name) obj[name] = row.querySelector('.kv-val').value.trim();
-    });
-    CONFIG.ats_boards[board] = obj;
+
+// How each system's boards are kept in the config (as boards.js has it): a
+// board name per company for these, an object under BOARD_KEYS for the rest.
+const SLUG_SYSTEMS = ['greenhouse', 'lever', 'ashby', 'gem', 'rippling', 'workable'];
+const BOARD_KEYS = { workday: 'workday_direct', oracle: 'oracle', eightfold: 'eightfold', icims: 'icims' };
+const hostIn = url => { try { return new URL(url).hostname; } catch { return url || ''; } };
+// The part of a board that identifies it, as boards.boardId() has it.
+function boardIdOf(r) {
+  const b = r.board;
+  if (!b) return '';
+  if (r.ats === 'workday') return `${b.tenant}/${b.site}`;
+  if (r.ats === 'oracle') return `${hostIn(b.base_url)}/${b.site}`;
+  if (r.ats === 'eightfold' || r.ats === 'icims') return hostIn(b.base_url);
+  return b.slug;
+}
+const sameCompany = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+function boardRowsFromConfig() {
+  const ab = CONFIG.ats_boards;
+  const rows = [];
+  for (const ats of SLUG_SYSTEMS) {
+    for (const [company, slug] of Object.entries(ab[ats])) rows.push({ company, ats, board: { slug } });
   }
-  const wd = {};
-  document.querySelectorAll('#wd-direct-list .wd-card').forEach(card => {
-    const name = card.querySelector('.wd-name').value.trim();
-    if (name) wd[name] = {
-      base_url: card.querySelector('.wd-base_url').value.trim(),
-      tenant:   card.querySelector('.wd-tenant').value.trim(),
-      site:     card.querySelector('.wd-site').value.trim(),
-    };
+  for (const [ats, key] of Object.entries(BOARD_KEYS)) {
+    for (const [company, b] of Object.entries(ab[key])) rows.push({ company, ats, board: { ...b } });
+  }
+  for (const [company, careersUrl] of Object.entries(ab.workday_companies)) rows.push({ company, ats: 'workday', careersUrl });
+  return rows.sort((a, b) => a.company.localeCompare(b.company));
+}
+
+function boardRowsToConfig(rows) {
+  const ab = CONFIG.ats_boards;
+  for (const k of [...SLUG_SYSTEMS, ...Object.values(BOARD_KEYS), 'workday_companies']) ab[k] = {};
+  for (const r of rows) {
+    if (r.careersUrl) ab.workday_companies[r.company] = r.careersUrl;
+    else if (BOARD_KEYS[r.ats]) ab[BOARD_KEYS[r.ats]][r.company] = { ...r.board };
+    else ab[r.ats][r.company] = r.board.slug;
+  }
+  // These systems' lists are written only when they hold a board, so a config
+  // that uses none of them saves unchanged.
+  for (const k of ['gem', 'rippling', 'workable', 'oracle', 'eightfold', 'icims']) if (!Object.keys(ab[k]).length) delete ab[k];
+}
+
+function loadBoardEditor(p) {
+  BOARDS[p].rows = boardRowsFromConfig();
+  renderBoardList(p);
+  refreshBoardStatus(p);
+}
+
+function renderAts() { loadBoardEditor('board'); }
+function collectAts() { boardRowsToConfig(BOARDS.board.rows); }
+
+function refreshBoardStatus(p) {
+  if (!window.electronAPI?.boardStatus) return;
+  window.electronAPI.boardStatus(BOARDS[p].rows.map(r => r.company))
+    .then(st => { BOARDS[p].status = st || {}; renderBoardList(p); })
+    .catch(() => {});
+}
+
+// The last-confirmed status of a row, from the known-boards file.
+function boardStatusHtml(r, status) {
+  const e = status[r.company];
+  const known = e && e.board && e.ats === r.ats;
+  const eId = e && e.board ? boardIdOf(e) : '';
+  if (r.careersUrl) {
+    // The careers page may lead to a board on any system.
+    if (e && e.board && e.status === 'ok') return `<span class="st-ok">Found: ${escHtml(SYSTEM_LABELS[e.ats])} (${escHtml(eId)})</span>`;
+    return '<span class="st-muted">Board is found on the next run</span>';
+  }
+  if (!known || eId.toLowerCase() !== boardIdOf(r).toLowerCase()) return '<span class="st-muted">Not checked yet</span>';
+  if (e.status === 'stale') return '<span class="st-warn">Not answering: check the link</span>';
+  if (!e.confirmed_at) return '<span class="st-muted">Not checked yet</span>';
+  return `<span class="st-ok">Confirmed ${escHtml(new Date(e.confirmed_at).toLocaleDateString())}</span>`;
+}
+
+function renderBoardList(p) {
+  const { rows, status } = BOARDS[p];
+  $(p + '-list').innerHTML = rows.map((r, i) => `
+    <div class="board-row">
+      <span title="${escHtml(r.company)}">${escHtml(r.company)}</span>
+      <span>${escHtml(SYSTEM_LABELS[r.ats] || r.ats)}</span>
+      <span class="mono" title="${escHtml(r.careersUrl || boardIdOf(r))}">${escHtml(r.careersUrl ? 'Careers page: ' + r.careersUrl : boardIdOf(r))}</span>
+      <span>${boardStatusHtml(r, status)}</span>
+      <button class="kv-del" title="Remove" onclick="removeBoardRow('${p}', ${i})">&times;</button>
+    </div>`).join('');
+  $(p + '-list-empty').style.display = rows.length ? 'none' : '';
+}
+
+function removeBoardRow(p, i) {
+  BOARDS[p].rows.splice(i, 1);
+  renderBoardList(p);
+}
+
+// One row per company: adding a company again replaces its row.
+function putBoardRow(p, row) {
+  const rows = BOARDS[p].rows.filter(r => !sameCompany(r.company, row.company));
+  rows.push(row);
+  BOARDS[p].rows = rows.sort((a, b) => a.company.localeCompare(b.company));
+  renderBoardList(p);
+  refreshBoardStatus(p);
+  if (p === 'board') setStatus('Unsaved changes', '');
+}
+
+function boardAddResult(p, msg, cls) {
+  const el = $(p + '-add-result');
+  el.textContent = msg;
+  el.className = 'hint board-result' + (cls ? ' ' + cls : '');
+}
+
+async function addBoardByLookup(p) {
+  const company = $(p + '-add-name').value.trim();
+  const careersUrl = $(p + '-add-url').value.trim();
+  if (!company) { boardAddResult(p, 'Enter a company name.', 'err'); return; }
+  const btn = $(p + '-add-btn');
+  btn.disabled = true;
+  boardAddResult(p, `Looking for ${company}'s job board…`);
+  try {
+    const res = await window.electronAPI.lookupBoard(company, careersUrl);
+    boardAddResult(p, res.message, res.found ? 'ok' : 'err');
+    if (res.found) {
+      putBoardRow(p, { company, ats: res.ats, board: res.board });
+      $(p + '-add-name').value = ''; $(p + '-add-url').value = '';
+    }
+  } catch (e) {
+    boardAddResult(p, cleanIpcError(e), 'err');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function addBoardManually(p) {
+  const company = $(p + '-man-name').value.trim();
+  const ats = $(p + '-man-ats').value;
+  const link = $(p + '-man-link').value.trim();
+  if (!company) { toast('Enter a company name', true); return; }
+  try {
+    const res = await window.electronAPI.boardFromLink(ats, link);
+    if (res.ats !== ats) toast(`That is a ${SYSTEM_LABELS[res.ats]} board, so it was added as ${SYSTEM_LABELS[res.ats]}`);
+    putBoardRow(p, res.careersUrl ? { company, ats: 'workday', careersUrl: res.careersUrl } : { company, ats: res.ats, board: res.board });
+    $(p + '-man-name').value = ''; $(p + '-man-link').value = '';
+  } catch (e) {
+    toast(cleanIpcError(e), true);
+  }
+}
+
+// Errors thrown in the main process arrive wrapped ("Error invoking remote
+// method 'x': Error: message"); show only the message.
+function cleanIpcError(e) {
+  return String(e && e.message || e).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
+}
+
+// ── Connections ─────────────────────────────────────────────────────────────
+// Each company's status, from boards.coverage(), as a color for the counts:
+//   ok     green   searched every run
+//   warn   orange  searched, with JobSift still working on it
+//   bad    red     no board JobSift can search: its roles come from Jobright only
+//   muted  gray    not looked up yet, or retrying
+//   faint  lighter gray, skipped
+// Only companies with a board JobSift searches (green and orange) are listed,
+// with the board in the Job Board column as [color, text, hover note].
+const COLOR_COUNTS = { ok: 'searched', warn: 'retrying', bad: 'Jobright only', muted: 'pending', faint: 'skipped' };
+// The name a shared board goes by: its first part ("xbox" for xbox/External),
+// or for a board on its own address, the first word that is not a generic one.
+const GENERIC_HOST_WORDS = new Set(['www', 'careers', 'career', 'jobs', 'job', 'apply', 'recruiting', 'hire']);
+const viaName = id => String(id || '').split('/')[0].split('.').find(w => w && !GENERIC_HOST_WORDS.has(w)) || String(id || '');
+const SEARCHED = {
+  ok:        c => ['ok', SYSTEM_LABELS[c.ats], 'Searched every run.'],
+  shared_ok: (c, name) => ['ok', `${SYSTEM_LABELS[c.ats]} (via ${viaName(c.board)})`,
+    `Its roles are on a ${SYSTEM_LABELS[c.ats]} board it shares with another company (${c.board}). Only roles that name ${name} are kept.`],
+  stale:     c => ['warn', `${SYSTEM_LABELS[c.ats]} (retrying)`,
+    c.manual ? 'The board stopped answering. You added it on the Sources tab: if it keeps failing, check its link there.'
+             : 'The board stopped answering. It answered before, so JobSift looks for it again on the next search.'],
+  shared:    (c, name) => ['warn', `${SYSTEM_LABELS[c.ats]} (via ${viaName(c.board)}, unconfirmed)`,
+    `Its apply links lead to a ${SYSTEM_LABELS[c.ats]} board (${c.board}) that may belong to another company. Each search checks it for roles that name ${name}.`],
+};
+const NOT_SEARCHED = { elsewhere: 'bad', none: 'bad', failed: 'muted', not_yet: 'muted', skipped: 'faint' };
+const isSearched = c => !!SEARCHED[c.coverage?.kind];
+const colorOf = c => (isSearched(c) ? SEARCHED[c.coverage.kind](c.coverage, c.name)[0] : NOT_SEARCHED[c.coverage?.kind] || 'muted');
+
+function boardChecked(c) {
+  const [color, text, note] = SEARCHED[c.coverage.kind](c.coverage, c.name);
+  return `<span class="st-${color}" title="${escHtml(note)}">${escHtml(text)}</span>`;
+}
+
+function renderConnectionSettings() {
+  const c = CONFIG.connections;
+  $('conn_search_companies').checked = c.search_companies === true;
+}
+// When a company with no board found is looked up again stays at its value
+// in the config file (connections.recheck_days).
+function collectConnectionSettings() {
+  CONFIG.connections.search_companies = $('conn_search_companies').checked;
+}
+
+function loadConnections() {
+  if (!window.electronAPI?.getConnectionsSummary) return;
+  window.electronAPI.getConnectionsSummary().then(renderConnections).catch(() => renderConnections(null));
+}
+// Each company's row changes as soon as it is looked up, by a check or a search.
+window.electronAPI?.onConnectionsUpdated?.(sum => { if (sum) renderConnections(sum); });
+
+let CONN_SUMMARY = null;
+function onConnectionSearchToggle() {
+  CONFIG.connections.search_companies = $('conn_search_companies').checked;
+  renderConnections(CONN_SUMMARY);
+}
+
+// The list of the connections' companies. While searching their companies is
+// on, it lists only those with a board JobSift searches, and their boards.
+function renderConnections(sum) {
+  CONN_SUMMARY = sum;
+  const searching = $('conn_search_companies').checked;
+  $('conn-remove-btn').style.display = sum ? '' : 'none';
+  $('conn-import-btn').textContent = sum ? 'Import again (replaces these)' : 'Import LinkedIn connections';
+  $('conn-companies-head').style.display = sum ? '' : 'none';
+  if (!sum) {
+    $('conn-delay').style.display = 'none';
+    $('conn-check').style.display = 'none';
+    $('conn-summary').innerHTML = '<span class="st-muted">No connections imported.</span>';
+    $('conn-companies').innerHTML = '';
+    return;
+  }
+  const date = new Date(sum.imported_at).toLocaleDateString();
+  const byColor = {};
+  for (const c of sum.companies) { const color = colorOf(c); byColor[color] = (byColor[color] || 0) + 1; }
+  const counts = Object.entries(COLOR_COUNTS).filter(([k]) => byColor[k]).map(([k, label]) => `${byColor[k]} ${label}`);
+  const delay = sum.lookup_count ? lookupDelayText(sum) : '';
+  $('conn-delay').textContent = delay;
+  $('conn-delay').style.display = delay ? '' : 'none';
+  $('conn-check').style.display = delay || BOARD_CHECK ? 'flex' : 'none';
+  $('conn-summary').innerHTML =
+    `<strong>${sum.people_count}</strong> people at <strong>${sum.company_count}</strong> companies, imported ${escHtml(date)}.` +
+    (searching && counts.length ? `<div class="hint" style="margin:4px 0 0">${escHtml(counts.join(', '))}.</div>` : '');
+  const shown = searching ? sum.companies.filter(isSearched) : sum.companies;
+  $('conn-companies-head').textContent = searching ? 'Their companies with a job board' : 'Their companies';
+  $('conn-companies').innerHTML = searching && !shown.length
+    ? '<p class="hint">No job boards found yet.</p>'
+    : `<div class="conn-table">
+    <div class="conn-row head"><span>Company</span><span>Connections</span><span>${searching ? 'Job Board' : ''}</span></div>
+    ${shown.map(c => `<div class="conn-row">
+      <span>${escHtml(c.name)}</span><span>${c.count}</span><span>${searching ? boardChecked(c) : ''}</span>
+    </div>`).join('')}</div>`;
+}
+
+// "Check them now": the same lookups a search makes, run from here so the
+// next search doesn't take longer. The button stops a check in progress.
+let BOARD_CHECK = false;
+async function toggleBoardCheck() {
+  const btn = $('conn-check-btn'), status = $('conn-check-status');
+  if (BOARD_CHECK) { btn.disabled = true; status.textContent = 'Stopping…'; window.electronAPI.stopConnectionBoardsCheck(); return; }
+  BOARD_CHECK = true;
+  btn.textContent = 'Stop';
+  status.textContent = 'Starting…';
+  const off = window.electronAPI.onConnectionBoardsProgress(({ n, total }) => {
+    if (!btn.disabled) status.textContent = `Checking ${n} of ${total} companies…`;
   });
-  CONFIG.ats_boards.workday_direct = wd;
+  let result = null;
+  try {
+    result = await window.electronAPI.checkConnectionBoards();
+    const boardsFound = `${result.found} job board${result.found === 1 ? '' : 's'}`;
+    toast(result.canceled ? `Stopped after ${result.looked} companies, with ${boardsFound} found`
+                          : `Checked ${result.looked} companies and found ${boardsFound}`);
+  } catch (e) {
+    toast(cleanIpcError(e), true);
+  } finally {
+    off();
+    BOARD_CHECK = false;
+    btn.disabled = false;
+    btn.textContent = 'Check them now';
+    status.textContent = '';
+    renderConnections(result ? result.summary : CONN_SUMMARY);
+  }
+}
+
+// How long looking up the companies not checked yet takes, and the two ways
+// to do it: the button below, or the next search with the box checked.
+function lookupDelayText(sum) {
+  const m = sum.lookup_minutes;
+  const time = m < 90 ? `${m} minute${m === 1 ? '' : 's'}` : `${Math.round(m / 30) / 2} hours`;
+  const n = sum.lookup_count;
+  const later = $('conn_search_companies').checked ? 'or it will be done on the next scrape' : 'or check the box to do so on the next scrape';
+  return `${n} ${n === 1 ? 'company’s job board has' : 'companies’ job boards have'} yet to be checked. Doing so will take ~${time}. ` +
+    `Click the button below to do so now, ${later}.`;
+}
+
+async function importConnections() {
+  try {
+    const sum = await window.electronAPI.importConnections();
+    if (!sum || sum.canceled) return null;
+    renderConnections(sum);
+    toast(`Imported ${sum.people_count} connections at ${sum.company_count} companies`);
+    return sum;
+  } catch (e) {
+    toast(cleanIpcError(e), true);
+    return null;
+  }
+}
+
+async function removeConnections() {
+  if (!confirm('Remove your imported connections?\n\nThis deletes them from JobSift. Badges disappear from every run.')) return;
+  try {
+    await window.electronAPI.removeConnections();
+    renderConnections(null);
+    toast('Connections removed');
+  } catch (e) {
+    toast(cleanIpcError(e), true);
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1221,12 +1604,13 @@ function buildTrackCard(t, idx) {
       <details class="fold">
         <summary>&#9658; More options for this track</summary>
         <div class="pane">
-          <div class="field"><label>Only accept titles containing <span style="font-weight:400">(optional; empty = any of your roles)</span></label>
-            <div class="tag-section" data-taglist="title_require"></div></div>
-          <div class="field"><label>Never accept titles containing</label>
+          <p class="hint">Which of your roles this track accepts is set on the Roles tab.</p>
+          <div class="field"><label>Never accept titles containing <span style="font-weight:400">(in addition to the titles skipped on every track, on the Avoid tab)</span></label>
             <div class="tag-section" data-taglist="title_block"></div></div>
-          <div class="field"><label>Companies to skip on this track</label>
+          <div class="field"><label>Companies to skip on this track <span style="font-weight:400">(in addition to the companies skipped on every track, on the Avoid tab)</span></label>
             <div class="tag-section" data-taglist="excluded_companies"></div></div>
+          <div class="field"><label>Industries to skip on this track <span style="font-weight:400">(in addition to the industries skipped on every track, on the Avoid tab)</span></label>
+            <div class="tag-section" data-taglist="blocked_industries"></div></div>
           <div class="field-row col2">
             <div class="field"><label>Roles that mention a security clearance</label>
               <select data-f="clearance_behavior">
@@ -1234,13 +1618,12 @@ function buildTrackCard(t, idx) {
                 <option value="reject" ${t.clearance_behavior === 'reject' ? 'selected' : ''}>Reject</option>
               </select></div>
           </div>
-          <div class="field"><label>Target companies on this track <span style="font-weight:400">(marked in your results; the allowance below lowers the pay floor for them)</span></label>
+          <div class="field"><label>Target companies on this track <span style="font-weight:400">(marked in your results; the wiggle room below lowers the pay floor for them)</span></label>
             <div class="tag-section" data-taglist="target_companies"></div></div>
           <div class="field-row col2">
-            <div class="field"><label>Salary allowance for target companies ($)</label>
-              <input type="number" min="0" data-f="wiggle_room" value="${v(t.wiggle_room)}" placeholder="0"></div>
-            <div class="field"><label>Reject if the posted maximum is below ($)</label>
-              <input type="number" min="0" data-f="reject_if_max_below" value="${v(t.reject_if_max_below)}" placeholder="Off"></div>
+            <div class="field"><label>Wiggle room for target companies ($)</label>
+              <input type="number" min="0" data-f="wiggle_room" value="${v(t.wiggle_room)}" placeholder="0">
+              <div class="hint" style="margin-top:4px">Lowers this track&rsquo;s salary floor by this amount for roles at target companies.</div></div>
           </div>
         </div>
       </details>
@@ -1263,7 +1646,7 @@ function buildTrackCard(t, idx) {
 
 function toggleTrack(card) { card.classList.toggle('open'); }
 
-const TRACK_NUMBERS = ['salary_floor', 'pay_good', 'pay_top', 'target_radius_mi', 'wiggle_room', 'reject_if_max_below'];
+const TRACK_NUMBERS = ['salary_floor', 'pay_good', 'pay_top', 'target_radius_mi', 'wiggle_room'];
 function syncTrack(card) {
   const t = CONFIG.tracks.find(x => x.key === card.dataset.key);
   if (!t) return;
@@ -1301,9 +1684,9 @@ function newTrack() {
     key: 'TRACK_' + Date.now(), label: 'New Track', work_types: ['Remote'],
     target_location: null, target_radius_mi: null,
     salary_floor: 0, pay_top: null, pay_good: null,
-    reject_if_max_below: null, reject_if_no_salary: false, wiggle_room: 0,
+    reject_if_no_salary: false, wiggle_room: 0,
     accept_grades: 'ABC', industry_required: false, clearance_behavior: 'flag',
-    title_require: [], title_block: [], excluded_companies: [], target_companies: [], employment_types: [],
+    title_block: [], excluded_companies: [], blocked_industries: [], target_companies: [], employment_types: [],
   };
 }
 function addTrack() {
@@ -1328,6 +1711,8 @@ function duplicateTrack(key) {
   const copy = { ...JSON.parse(JSON.stringify(src)), key: 'TRACK_' + Date.now(), label: (src.label || src.key) + ' (copy)' };
   const at = CONFIG.tracks.indexOf(src) + 1;
   CONFIG.tracks.splice(at, 0, copy);
+  // The copy accepts the same roles as the track it was copied from.
+  for (const r of CONFIG.roles) if (Array.isArray(r.tracks) && r.tracks.includes(src.key)) r.tracks.push(copy.key);
   renderTracks();
   const card = document.querySelectorAll('#tracks-list .track-card')[at];
   if (card) { card.classList.add('open'); card.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
@@ -1374,94 +1759,57 @@ function initDragDrop() {
   });
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-//  ROLE TYPES  (stored as config.role_categories, and as role_cat on each
-//  scored role; the key names predate the UI name and are kept so existing
-//  configs and saved results still load)
-// ══════════════════════════════════════════════════════════════════════════════
-function renderRoleCats() {
-  $('rolecats-list').innerHTML = CONFIG.role_categories.categories.map(cat => `
-    <div class="track-card row-card">
-      <div class="row-head">
-        <span class="drag-handle" style="color:var(--muted);font-size:18px;cursor:grab;padding:0 4px">&#8942;</span>
-        <input type="text" class="rc-label" value="${escHtml(cat.label)}" placeholder="Role type label" style="flex:0 0 200px;font-weight:600">
-        <button class="btn-danger" onclick="removeRoleCat(this)" style="margin-left:auto">Remove</button>
-      </div>
-      <div class="hint" style="margin-bottom:4px">Title keywords, one per line (empty = everything left over)</div>
-      <textarea class="rc-keywords" rows="3"
-        style="width:100%;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px 8px;font-family:monospace;font-size:12px;resize:vertical"
-        >${escHtml((cat.keywords || []).join('\n'))}</textarea>
-    </div>`).join('');
-  _initListDrag($('rolecats-list'), '.track-card', null);   // collectRoleCats reads DOM order
-}
-function collectRoleCats() {
-  const withKws = [], catchAlls = [];
-  document.querySelectorAll('#rolecats-list .track-card').forEach(card => {
-    const label = card.querySelector('.rc-label').value.trim();
-    const kws   = card.querySelector('.rc-keywords').value.split('\n').map(s => s.trim()).filter(Boolean);
-    if (label) (kws.length ? withKws : catchAlls).push({ label, keywords: kws });
-  });
-  CONFIG.role_categories.categories = [...withKws, ...catchAlls];   // catch-alls always last
-}
-// Edits and drag order live only in the DOM until save, so Add and Remove read
-// the cards back first; otherwise Add would drop unsaved edits and Remove,
-// after a drag, would delete whichever type sat at that position before.
-function addRoleCat() {
-  collectRoleCats();
-  CONFIG.role_categories.categories.push({ label: 'New Role Type', keywords: [] });
-  renderRoleCats();
-}
-function removeRoleCat(btn) {
-  btn.closest('.track-card').remove();
-  collectRoleCats();
-  renderRoleCats();
-}
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  JOBRIGHT SEARCHES
+//  WHAT EACH RUN SEARCHES FOR
 // ══════════════════════════════════════════════════════════════════════════════
-function renderJobright() {
-  $('jobright-passes-list').innerHTML = CONFIG.jobright_searches.passes.map((p, i) => `
-    <div class="row-card jp-row" data-id="${escHtml(p.id || '')}">
-      <div class="field-row col3" style="margin-bottom:0">
-        <div class="field"><label>Job category</label>
-          <input class="jp-taxonomy" type="text" value="${escHtml(p.taxonomy || '')}" placeholder="As listed in Jobright's search filter"></div>
-        <div class="field"><label>Where</label>
-          <select class="jp-model">
-            <option value="remote"${p.work_model !== 'local' ? ' selected' : ''}>Remote roles</option>
-            <option value="local"${p.work_model === 'local' ? ' selected' : ''}>Near my in-person tracks</option>
-          </select></div>
-        <div class="field"><label>Label <span style="font-weight:400">(optional, shown while scraping)</span></label>
-          <div style="display:flex;gap:8px">
-            <input class="jp-label" type="text" value="${escHtml(p.label || '')}" placeholder="Automatic">
-            <button class="btn-danger" onclick="removeJobrightPass(${i})">Remove</button>
-          </div></div>
-      </div>
-    </div>`).join('');
+// Worked out by the engine (criteria.jobrightPlan) from the roles and tracks as
+// they are on this page now, and shown under the roles. Nothing to fill in.
+const andList = items => items.length < 3 ? items.join(' and ') : `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
+
+function refreshSearchPlan() {
+  if (!window.electronAPI?.getJobrightPlan || !$('search-plan')) return;
+  document.querySelectorAll('#tracks-list .track-card').forEach(syncTrack);
+  window.electronAPI.getJobrightPlan({ roles: CONFIG.roles.filter(r => r.title.trim()), tracks: CONFIG.tracks, title_filters: CONFIG.title_filters })
+    .then(plan => {
+      showFruitlessRoles(plan.fruitless || []);
+      if (!plan.titles.length) {
+        $('search-plan').innerHTML = CONFIG.roles.length ? '<strong>Nothing is searched for.</strong> Tick Search for at least one role.' : '';
+        return;
+      }
+      const titles = andList(plan.titles.map(t => `&ldquo;${escHtml(t)}&rdquo;`));
+      const why = plan.titles.length > 1 ? ', the fewest of your searched roles that also find the rest' : '';
+      const places = [plan.remote ? 'for remote roles' : '', ...plan.areas.map(a => `near ${escHtml(a.location)} (${a.radius} mi)`)].filter(Boolean);
+      const n = plan.titles.length * places.length;
+      $('search-plan').innerHTML = (places.length
+        ? `<strong>Each run searches</strong> Jobright, and company boards on Workday, Eightfold, and Oracle, for ${titles}${why}. ` +
+          `Jobright is searched ${andList(places)}: ${n} search${n === 1 ? '' : 'es'}.`
+        : `<strong>Each run searches</strong> company boards on Workday, Eightfold, and Oracle for ${titles}${why}. ` +
+          'Jobright is searched once a track accepts remote work or has a location.');
+    })
+    .catch(() => {});
 }
-function collectJobright() {
-  const passes = [];
-  document.querySelectorAll('#jobright-passes-list .jp-row').forEach((row, i) => {
-    const taxonomy = row.querySelector('.jp-taxonomy').value.trim();
-    if (!taxonomy) return;
-    passes.push({
-      id: row.dataset.id || `search_${i + 1}`,
-      label: row.querySelector('.jp-label').value.trim(),
-      taxonomy,
-      work_model: row.querySelector('.jp-model').value,
-    });
+
+// Searched roles whose searches can only find jobs that are then rejected
+// (criteria.fruitlessRoles): warned about above the table and marked in it.
+function showFruitlessRoles(list) {
+  const quote = r => `&ldquo;${escHtml(r.title)}&rdquo;`;
+  const unaccepted = list.filter(r => !r.blocked);
+  const blocked = list.filter(r => r.blocked);
+  const lines = [];
+  if (unaccepted.length) lines.push(`Searched for, but no track accepts ${unaccepted.length === 1 ? 'it' : 'them'}, so every job found is rejected: ` +
+    `${andList(unaccepted.map(quote))}. Untick Search or choose a track.`);
+  if (blocked.length) lines.push(`Searched for, but ${blocked.length === 1 ? 'its title contains' : 'their titles contain'} a blocked title word, so every job found is rejected: ` +
+    `${andList(blocked.map(r => `${quote(r)} (${escHtml(r.blocked)})`))}. Untick Search, or remove the word on the Avoid tab or from the track.`);
+  $('role-warn').innerHTML = lines.join('<br>');
+  $('role-warn').style.display = lines.length ? '' : 'none';
+  const why = new Map(list.map(r => [r.title.toLowerCase(), r.blocked ? `Every job found is rejected: its title contains “${r.blocked}”` : 'Every job found is rejected: no track accepts this role']));
+  document.querySelectorAll('#roles-table .role-row').forEach(row => {
+    const r = CONFIG.roles[Number(row.dataset.i)];
+    const reason = r && r.search ? why.get(r.title.trim().toLowerCase()) : null;
+    row.classList.toggle('unaccepted', !!reason);
+    row.querySelector('.role-title').title = reason || '';
   });
-  CONFIG.jobright_searches.passes = passes;
-}
-function addJobrightPass() {
-  collectJobright();
-  CONFIG.jobright_searches.passes.push({ id: 'search_' + Date.now(), label: '', taxonomy: '', work_model: 'remote' });
-  renderJobright();
-}
-function removeJobrightPass(i) {
-  collectJobright();
-  CONFIG.jobright_searches.passes.splice(i, 1);
-  renderJobright();
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1470,10 +1818,9 @@ function removeJobrightPass(i) {
 function collectConfig() {
   document.querySelectorAll('#tracks-list .track-card').forEach(syncTrack);
   collectRoles();
-  collectRoleCats();
   collectLimits();
-  collectJobright();
   collectAts();
+  collectConnectionSettings();
   collectSettings();
   return CONFIG;
 }
@@ -1481,7 +1828,7 @@ function saveConfig() {
   const data = collectConfig();
   setStatus('Saving…', '');
   return window.electronAPI.saveConfig(data)
-    .then(() => { toast('Saved'); setStatus('Saved', 'ok'); })
+    .then(() => { toast('Saved'); setStatus('Saved', 'ok'); renderConnectionSettings(); refreshBoardStatus('board'); loadConnections(); })
     .catch(e  => { toast('Save failed: ' + e.message, true); setStatus('Error', 'err'); });
 }
 function returnHome() { window.location.href = '../dashboard/index.html'; }
@@ -1494,7 +1841,7 @@ const WIZ_TOTAL = 8;
 const wiz = {
   roles: { ideal: [], good: [], acceptable: [] }, block: [],
   industries: { strong: [], some: [] }, skills: [],
-  avoidIndustries: [], companies: [], phrases: [], categories: [],
+  avoidIndustries: [], companies: [], phrases: [],
   workTypes: ['Remote'],
 };
 
@@ -1518,15 +1865,13 @@ function initWizard() {
   }
   const rp = RULES.rolePoints, gc = Object.fromEntries(RULES.gradeCutoffs);
   $('wiz-roles-points').textContent =
-    `In the match score, an Ideal role earns ${rp.ideal} title points, Good ${rp.good} and Acceptable ${rp.acceptable}. ` +
-    'When several match, the longest (most specific) one counts.';
+    `How much a role is worth: ${fitExplanation().replace(' (see How the match score works, below)', '')} ` +
+    'When several match, the longest (most specific) one counts. Ideal and Good roles are searched for; Acceptable roles ' +
+    'are kept when another search turns them up. You can change this for each role on the Roles tab.';
   $('wiz-grades-hint').textContent =
-    `Each job gets a match score out of 100 from its title, pay, industry and skills. ` +
+    `Each job gets a match score out of 100 from its title, pay, industry, and skills. ` +
     `Grade A from ${gc.A}, B from ${gc.B}, C from ${gc.C}; below ${gc.C} is not a match.`;
   wiz.skills          = [...CONFIG.skills];
-  wiz.staffing        = [...CONFIG.company_lists.staffing_firms];
-  buildTagWidget($('wiz-tag-staffing'), wiz.staffing);
-  $('wiz-reposts').value = CONFIG.sources.reposts;
   wiz.block           = [...CONFIG.title_filters.title_block];
   wiz.avoidIndustries = [...CONFIG.rejection_filters.blocked_industries];
   wiz.companies       = [...CONFIG.company_lists.blocked_companies];
@@ -1579,53 +1924,64 @@ function initWizard() {
     empSel.appendChild(btn);
   }
 
-  const passes = CONFIG.jobright_searches.passes;
-  wiz.categories = [...new Set(passes.map(p => p.taxonomy).filter(Boolean))];
-  buildTagWidget($('wiz-tag-jbtaxonomies'), wiz.categories);
-  $('wiz-jb-model').innerHTML = `
-    <option value="remote">Remote roles</option>
-    <option value="local">Near my in-person track</option>
-    <option value="both">Both</option>`;
-  const hasLocal = passes.some(p => p.work_model === 'local' && p.taxonomy);
-  const hasRemote = passes.some(p => p.work_model !== 'local' && p.taxonomy);
-  $('wiz-jb-model').value = hasLocal && hasRemote ? 'both' : hasLocal ? 'local' : 'remote';
-
+  loadBoardEditor('wizboard');
+  initConnectionsDrop();
   $('wiz-max-exp').value    = CONFIG.rejection_filters.max_experience_years ?? '';
   $('wiz-max-travel').value = CONFIG.rejection_filters.max_travel_pct ?? '';
   showWizStep(1);
 }
 
 function showWizStep(n) {
-  // Arriving at the search step with no categories yet: start from the roles.
-  if (n === 5 && !wiz.categories.length) {
-    wiz.categories.push(...[...wiz.roles.ideal, ...wiz.roles.good]);
-    if (!wiz.categories.length) wiz.categories.push(...wiz.roles.acceptable);
-    buildTagWidget($('wiz-tag-jbtaxonomies'), wiz.categories);
-  }
   document.querySelectorAll('.wiz-step').forEach((s, i) => s.style.display = (i + 1 === n) ? '' : 'none');
   for (let i = 1; i <= WIZ_TOTAL; i++) $('wiz-dot-' + i).className = 'wiz-dot' + (i < n ? ' done' : i === n ? ' active' : '');
   $('wiz-step-label').textContent = `Step ${n} of ${WIZ_TOTAL}`;
 }
 function wizGo(n) { showWizStep(n); }
 
-function wizAddAts(platform) {
-  const row = document.createElement('div');
-  row.className = 'wiz-kv-row';
-  row.dataset.platform = platform;
-  row.innerHTML = `
-    <span style="font-size:12px;color:var(--accent);font-weight:600;text-transform:capitalize">${escHtml(platform)}</span>
-    <input type="text" class="kv-name" placeholder="Company name">
-    <input type="text" class="kv-val"  placeholder="${escHtml(SLUG_LABELS[platform] || 'Value')}">
-    <button class="kv-del" title="Remove" onclick="this.closest('.wiz-kv-row').remove()">&times;</button>`;
-  extractSlugOnBlur(row.querySelector('.kv-val'), platform);
-  $('wiz-ats-rows').appendChild(row);
+// The connections step: a file dropped on the drop area is read here and
+// handed over as text; clicking it opens the system file picker instead.
+function showWizConnections(sum) {
+  if (!sum) return;
+  $('wiz-conn-drop').classList.add('done');
+  $('wiz-conn-main').textContent = `Imported ${sum.people_count} connections at ${sum.company_count} companies`;
+  $('wiz-conn-sub').textContent = 'Drop or choose another file to replace them';
+}
+
+function initConnectionsDrop() {
+  const zone = $('wiz-conn-drop');
+  const stop = e => { e.preventDefault(); e.stopPropagation(); };
+  zone.addEventListener('dragover', e => { stop(e); zone.classList.add('over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('over'));
+  zone.addEventListener('drop', async e => {
+    stop(e);
+    zone.classList.remove('over');
+    const file = e.dataTransfer.files[0];
+    if (!file) return;
+    if (!/\.csv$/i.test(file.name)) { toast('Drop the Connections.csv file from your LinkedIn export', true); return; }
+    try {
+      const sum = await window.electronAPI.importConnectionsText(await file.text());
+      showWizConnections(sum);
+      toast(`Imported ${sum.people_count} connections at ${sum.company_count} companies`);
+    } catch (err) {
+      toast(cleanIpcError(err), true);
+    }
+  });
+  // A file dropped anywhere else in the window must not navigate away from it.
+  window.addEventListener('dragover', stop);
+  window.addEventListener('drop', stop);
 }
 
 function _wizApplyToConfig() {
+  // A role already set up keeps its search, track, and tab settings.
+  const before = new Map(CONFIG.roles.map(r => [r.title.toLowerCase(), r]));
   CONFIG.roles = [];
   const seen = new Set();
   for (const p of PRIORITIES) for (const title of wiz.roles[p]) {
-    if (!seen.has(title.toLowerCase())) { seen.add(title.toLowerCase()); CONFIG.roles.push({ title, priority: p }); }
+    const k = title.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const old = before.get(k);
+    CONFIG.roles.push(old ? { ...old, title, priority: p } : { title, priority: p, search: searchedByDefault(p) });
   }
   CONFIG.industries = STRENGTHS.flatMap(s => wiz.industries[s].map(name => ({ name, strength: s })));
   CONFIG.skills = [...wiz.skills];
@@ -1644,27 +2000,13 @@ function _wizApplyToConfig() {
   track.label           = track.label || `${wts.join(' / ')}${city ? ' near ' + city : ''}`;
   if (state) CONFIG.user_state = state;
 
-  const mode = $('wiz-jb-model').value;
-  const passes = [];
-  wiz.categories.forEach((taxonomy, i) => {
-    if (mode !== 'local')  passes.push({ id: `remote_${i + 1}`, label: '', taxonomy, work_model: 'remote' });
-    if (mode !== 'remote') passes.push({ id: `local_${i + 1}`,  label: '', taxonomy, work_model: 'local' });
-  });
-  CONFIG.jobright_searches.passes = passes;
-  if (!CONFIG.pipeline.search_term) CONFIG.pipeline.search_term = (wiz.categories[0] || 'Job') + ' search';
-
-  document.querySelectorAll('#wiz-ats-rows .wiz-kv-row').forEach(row => {
-    const name = row.querySelector('.kv-name').value.trim();
-    if (name) CONFIG.ats_boards[row.dataset.platform][name] = row.querySelector('.kv-val').value.trim();
-  });
+  boardRowsToConfig(BOARDS.wizboard.rows);
 
   CONFIG.rejection_filters.blocked_industries   = [...wiz.avoidIndustries];
   CONFIG.rejection_filters.description_blockers = [...wiz.phrases];
   CONFIG.rejection_filters.max_experience_years = num($('wiz-max-exp').value);
   CONFIG.rejection_filters.max_travel_pct       = num($('wiz-max-travel').value);
   CONFIG.company_lists.blocked_companies        = [...wiz.companies];
-  CONFIG.company_lists.staffing_firms           = [...wiz.staffing];
-  CONFIG.sources.reposts                        = $('wiz-reposts').value;
   CONFIG.setup_complete = true;
 }
 
@@ -1673,7 +2015,7 @@ function _revealFullConfig() {
   $('wizard').style.display = 'none';
   document.querySelector('nav').style.display = '';
   document.querySelectorAll('.tab').forEach(t => t.style.display = '');
-  showTab('roles', document.querySelector('nav button[data-tab="roles"]'));
+  showTab('tracks', document.querySelector('nav button[data-tab="tracks"]'));
   render();
 }
 function wizFinish() {

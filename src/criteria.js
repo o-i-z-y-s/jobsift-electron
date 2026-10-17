@@ -25,22 +25,27 @@
  * accepts A only, A and B, or A to C. A posting older than the
  * settings.stale_after_days limit is shown one grade lower (never below C).
  *
- * Config layout (config_version 3):
- *   roles:      [{ title, priority: 'ideal' | 'good' | 'acceptable' }]
+ * Config layout (config_version 5):
+ *   roles:      [{ title, priority: 'ideal' | 'good' | 'acceptable', search, tracks, type }]
+ *                 search  whether Jobright and company boards are searched for it
+ *                 tracks  the keys of the tracks that accept it; absent = every track
+ *                 type    the dashboard tab its jobs are shown under; absent = "Other"
  *   industries: [{ name, strength: 'strong' | 'some' }]
  *   skills:     [string]
  *   tracks[]:   accept_grades 'A' | 'AB' | 'ABC', industry_required,
  *               salary_floor, pay_top, pay_good (blank = derived)
  *   tracks[]:   employment_types [] (empty = every type; "Not stated" always passes)
+ *   tracks[]:   blocked_industries [] (on top of rejection_filters.blocked_industries)
  *   settings:   stale_after_days (blank = never lower a grade)
  *   sources:    see sources.js; company_lists.staffing_firms
+ *   connections: search_companies, recheck_days (see boards.js)
  *
  * No Electron dependency, so this module can be tested directly with node.
  */
 
 const { DEFAULT_SOURCES, EMPLOYMENT_TYPES, NOT_STATED, POSTED_BY } = require('./sources');
 
-const CONFIG_VERSION = 3;
+const CONFIG_VERSION = 5;
 
 const PRIORITY_POINTS = { ideal: 40, good: 30, acceptable: 20 };
 const STRENGTH_POINTS = { strong: 20, some: 10 };
@@ -53,6 +58,9 @@ const ACCEPT_LABEL = { A: 'A only', AB: 'A and B', ABC: 'A to C' };
 const PAY_DERIVED_PCT = { top: 30, good: 15 };
 const DEFAULT_RADIUS_MI = 35;
 const DEFAULT_STALE_DAYS = 21;
+// Searching the job boards of the user's LinkedIn connections' companies. Off
+// unless the user turns it on: by default, connections only mark matching roles.
+const DEFAULT_CONNECTIONS = { search_companies: false, recheck_days: 30 };
 
 const PRIORITY_RANK = { ideal: 3, good: 2, acceptable: 1 };
 const STRENGTH_RANK = { strong: 2, some: 1 };
@@ -134,15 +142,25 @@ const preview = (list, n = 5) => list.slice(0, n).join(', ') + (list.length > n 
  */
 function migrateConfig(input) {
   const from = input?.config_version || 0;
-  if (from >= CONFIG_VERSION) return { config: input, changed: false, notes: [] };
+  if (from > CONFIG_VERSION || (from === CONFIG_VERSION && !UNUSED.some(([k, f]) => hasSetting(input, k, f)))) {
+    return { config: input, changed: false, notes: [] };
+  }
   const cfg = JSON.parse(JSON.stringify(input || {}));
   const notes = [];
   if (from < 2) toVersion2(cfg, notes);
   if (from < 3) toVersion3(cfg, notes);
+  if (from < 4) toVersion4(cfg, notes);
+  if (from < 5) toVersion5(cfg, notes);
+  for (const [k, f] of UNUSED) if (hasSetting(cfg, k, f)) delete cfg[k][f];
   cfg.config_version = CONFIG_VERSION;
   if (notes.length) cfg.migration_notes = [...(cfg.migration_notes || []), ...notes];
   return { config: cfg, changed: true, notes };
 }
+
+// Settings no part of JobSift reads, as [section, key]. They are removed from
+// the file when it is loaded.
+const UNUSED = [['connections', 'lookups_per_run']];
+const hasSetting = (cfg, k, f) => !!cfg?.[k] && typeof cfg[k] === 'object' && Object.hasOwn(cfg[k], f);
 
 // Version 2: roles, industries and skills replace the score lists; tracks get
 // a grade bar instead of cutoffs and weights.
@@ -243,6 +261,95 @@ function toVersion3(cfg, notes) {
   }
 }
 
+// Version 4: settings for searching the connections' companies, Jobright and
+// Workday searches worked out from the roles and tracks, industries
+// to skip on each track, and Jobright cards checked against the Avoid lists.
+// Additive only, so JobSift 3.0 still reads a version 4 config (it leaves a
+// newer config as it is, and keeps using jobright_searches.passes,
+// ats_boards.workday_search_terms and title_filters.card_exclude, which
+// version 4 does not read).
+function toVersion4(cfg, notes) {
+  cfg.connections = { ...DEFAULT_CONNECTIONS, ...(cfg.connections || {}) };
+  for (const t of cfg.tracks || []) if (!Array.isArray(t.blocked_industries)) t.blocked_industries = [];
+  if (cfg.setup_complete === true && (cfg.jobright_searches?.passes || []).some(p => norm(p.taxonomy))) {
+    notes.push('Jobright is now searched for your Ideal and Good roles, wherever your tracks say you want to work, ' +
+      'instead of for the job categories you set. What each run searches for is shown under your roles on the Roles tab.');
+  }
+  const wdTerms = (cfg.ats_boards?.workday_search_terms || []).map(norm).filter(Boolean);
+  if (cfg.setup_complete === true && wdTerms.length) {
+    notes.push(`Workday boards are now searched for the same titles as Jobright, so your Workday search terms (${preview(wdTerms)}) ` +
+      'are no longer used. To search for more titles, add them to your roles.');
+  }
+  // Version 4 checks Jobright cards against the Avoid lists, so the separate
+  // card list is folded into the Avoid tab's titles.
+  const tf = cfg.title_filters = cfg.title_filters || {};
+  if (!Array.isArray(tf.title_block)) tf.title_block = [];
+  const have = new Set(tf.title_block.map(x => norm(x).toLowerCase()));
+  const moved = (tf.card_exclude || []).map(norm).filter(x => x && !have.has(x.toLowerCase()));
+  if (moved.length) {
+    tf.title_block.push(...new Map(moved.map(x => [x.toLowerCase(), x])).values());
+    if (cfg.setup_complete === true) {
+      notes.push(`"Skip Jobright cards" is now part of the Avoid tab, so ${moved.length} of its entries were added to the titles to avoid: ` +
+        `${preview(moved)}. Move any that are industries to Industries on the Avoid tab.`);
+    }
+  }
+}
+
+// Version 5: every title list moves onto the roles. Each role says whether it
+// is searched for (all Ideal and Good roles were), which tracks accept it (each
+// track's "only accept titles containing" list) and its dashboard tab (the
+// first role type whose keywords it contains). Results are unchanged. Not
+// read by JobSift 3.0, so the settings 3.0 still used are removed here.
+function toVersion5(cfg, notes) {
+  const roles = (cfg.roles || []).filter(r => norm(r.title));
+  const tracks = cfg.tracks || [];
+  const req = tracks.map(t => ({ key: t.key, phrases: (t.title_require || []).map(norm).filter(Boolean) }));
+
+  // A track's phrase more specific than every role containing it ("technical
+  // delivery manager" with only "delivery manager" listed) becomes a role of
+  // its own, so the track still accepts exactly those titles.
+  for (const { phrases } of req) {
+    for (const p of phrases) {
+      if (roles.some(r => wordRe(p).test(r.title))) continue;
+      const broader = roles.filter(r => wordRe(r.title).test(p)).sort((a, b) => PRIORITY_RANK[b.priority] - PRIORITY_RANK[a.priority])[0];
+      if (broader) roles.push({ title: p, priority: broader.priority, search: false });
+    }
+  }
+
+  const cats = (cfg.role_categories?.categories || []).filter(c => norm(c.label));
+  const typeOf = title => {
+    const t = title.toLowerCase();
+    const hit = cats.find(c => (c.keywords || []).some(k => norm(k) && t.includes(norm(k).toLowerCase())));
+    const rest = cats.length && !(cats[cats.length - 1].keywords || []).some(norm) ? cats[cats.length - 1] : null;
+    return norm((hit || rest || {}).label) || null;
+  };
+  const anyTop = roles.some(r => r.priority === 'ideal' || r.priority === 'good');
+  for (const r of roles) {
+    if (typeof r.search !== 'boolean') r.search = anyTop ? r.priority === 'ideal' || r.priority === 'good' : true;
+    const on = req.filter(t => !t.phrases.length || t.phrases.some(p => wordRe(p).test(r.title))).map(t => t.key);
+    if (on.length < tracks.length) r.tracks = on;
+    const type = typeOf(r.title);
+    if (type) r.type = type;
+  }
+  cfg.roles = roles;
+
+  const unaccepted = roles.filter(r => r.search && Array.isArray(r.tracks) && !r.tracks.length).map(r => r.title);
+  if (cfg.setup_complete === true && tracks.some(t => (t.title_require || []).length)) {
+    notes.push('Each role on the Roles tab now says whether it is searched for, which tracks accept it, and its dashboard tab. ' +
+      'These were set from each track\'s "Only accept titles containing" list and from your Role Types, so your results are unchanged.');
+  }
+  if (cfg.setup_complete === true && unaccepted.length) {
+    notes.push(`${unaccepted.length} roles are searched for, but no track accepts them, so every job found for them is rejected: ` +
+      `${preview(unaccepted)}. On the Roles tab, untick Search for these or choose a track that accepts them.`);
+  }
+
+  for (const t of tracks) delete t.title_require;
+  delete cfg.role_categories;
+  delete cfg.jobright_searches;
+  if (cfg.title_filters) delete cfg.title_filters.card_exclude;
+  if (cfg.ats_boards) delete cfg.ats_boards.workday_search_terms;
+}
+
 // ── Reading the config ──────────────────────────────────────────────────────
 
 /**
@@ -253,7 +360,12 @@ function toVersion3(cfg, notes) {
 function criteriaFromConfig(input) {
   const cfg = migrateConfig(input).config;
   const roles = (cfg.roles || []).filter(r => norm(r.title))
-    .map(r => ({ title: norm(r.title), priority: PRIORITY_POINTS[r.priority] ? r.priority : 'acceptable' }));
+    .map(r => ({
+      title: norm(r.title), priority: PRIORITY_POINTS[r.priority] ? r.priority : 'acceptable',
+      search: r.search === true,
+      tracks: Array.isArray(r.tracks) ? new Set(r.tracks) : null,
+      type: norm(r.type) || null,
+    }));
   const industries = (cfg.industries || []).filter(i => norm(i.name))
     .map(i => ({ name: norm(i.name), strength: STRENGTH_POINTS[i.strength] ? i.strength : 'some' }));
   const skills = [...new Set((cfg.skills || []).map(norm).filter(Boolean))];
@@ -266,6 +378,81 @@ function criteriaFromConfig(input) {
       .sort((a, b) => STRENGTH_RANK[b.strength] - STRENGTH_RANK[a.strength]),
     skills: skills.map(s => ({ word: s, re: wordRe(s) })),
   };
+}
+
+/**
+ * The fewest titles that cover the roles marked for searching: a title that
+ * contains another searched title as whole words is dropped, because the
+ * search for the shorter title also finds it.
+ */
+function deriveSearchTitles(roles) {
+  const searched = (roles || []).filter(r => r.search === true && norm(r.title));
+  const titles = [...new Map(searched.map(r => [norm(r.title).toLowerCase(), norm(r.title)])).values()];
+  return titles.filter(t => !titles.some(o => o !== t && o.length < t.length && wordRe(o).test(t)));
+}
+
+/**
+ * What Jobright and Workday boards are searched for, and where Jobright is
+ * searched:
+ *   titles   deriveSearchTitles() of the roles
+ *   remote   whether any track accepts remote work
+ *   areas    each location set on an onsite or hybrid track, with the
+ *            widest commute radius set there: [{ location, radius }]
+ *   fruitless the searched roles no track can keep a job for (fruitlessRoles)
+ * Every title is searched once per place.
+ */
+function jobrightPlan(cfg) {
+  const titles = deriveSearchTitles(cfg.roles);
+  const fruitless = fruitlessRoles(cfg);
+  const tracks = cfg.tracks || [];
+  const remote = tracks.some(t => (t.work_types || []).includes('Remote'));
+  // One search per location, at the widest radius any track sets there: each
+  // track's own radius is applied when the results are scored.
+  const byPlace = new Map();
+  for (const t of tracks) {
+    if (!norm(t.target_location) || !(t.work_types || []).some(w => w === 'Onsite' || w === 'Hybrid')) continue;
+    const key = norm(t.target_location).toLowerCase();
+    const cur = byPlace.get(key);
+    if (!cur) byPlace.set(key, { location: norm(t.target_location), radius: radiusFor(t) });
+    else cur.radius = Math.max(cur.radius, radiusFor(t));
+  }
+  return { titles, remote, areas: [...byPlace.values()], fruitless };
+}
+
+/**
+ * Searched roles whose searches can only bring in jobs that are then rejected.
+ * A job found for a role has the role in its title, and a track keeps it only
+ * when no blocked title word is in it and it contains a role the track accepts:
+ * the role itself, a shorter role inside it, or a longer role around it (a
+ * search for "X" also finds "Senior X"). Checked on every track:
+ *   [{ title, blocked }]  blocked is the word that rejects it on every track
+ *                         that accepts it, or null when no track accepts it.
+ */
+function fruitlessRoles(cfg) {
+  const tracks = cfg.tracks || [];
+  const roles = (cfg.roles || []).filter(r => norm(r.title));
+  if (!tracks.length) return [];
+  const words = list => (Array.isArray(list) ? list : []).map(norm).filter(Boolean);
+  const blockedWord = (title, list) => list.find(w => wordRe(w).test(title)) || null;
+  const everyTrack = words(cfg.title_filters?.title_block);
+  const out = [];
+  for (const r of roles) {
+    if (r.search !== true) continue;
+    const title = norm(r.title);
+    const inTitle = wordRe(title);
+    let blocked = null, kept = false;
+    for (const t of tracks) {
+      const block = [...everyTrack, ...words(t.title_block)];
+      const accepts = roles.some(o => (!Array.isArray(o.tracks) || o.tracks.includes(t.key)) &&
+        (wordRe(o.title).test(title) || (inTitle.test(o.title) && !blockedWord(o.title, block))));
+      if (!accepts) continue;
+      const word = blockedWord(title, block);
+      if (!word) { kept = true; break; }
+      blocked = blocked || word;
+    }
+    if (!kept) out.push({ title, blocked });
+  }
+  return out;
 }
 
 /** Which grades a track accepts: 'A', 'AB' or 'ABC' (the default). */
@@ -303,8 +490,12 @@ function payBands(track) {
 const K = v => `$${Math.round(v / 1000)}K`;
 const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
 
-function matchRole(title, crit) {
-  return crit.roles.find(r => r.re.test(title || '')) || null;
+/**
+ * The most specific listed role in a title, or null. With a track key, only
+ * roles that track accepts count.
+ */
+function matchRole(title, crit, trackKey = null) {
+  return crit.roles.find(r => r.re.test(title || '') && (trackKey == null || !r.tracks || r.tracks.has(trackKey))) || null;
 }
 
 /**
@@ -316,7 +507,7 @@ function scoreJob(job, crit, track) {
   const parts = [];
 
   if (crit.roles.length) {
-    const hit = matchRole(job.title, crit);
+    const hit = matchRole(job.title, crit, track?.key ?? null);
     parts.push(hit
       ? { signal: 'Title', points: PRIORITY_POINTS[hit.priority], max: MAX.Title, detail: `${cap(hit.priority)}: "${hit.title}"` }
       : { signal: 'Title', points: 0, max: MAX.Title, detail: 'No listed role in the title' });
@@ -380,10 +571,11 @@ const RULES = {
   skillPoints: SKILL_POINTS, max: MAX, gradeCutoffs: GRADE_CUTOFFS, acceptLabels: ACCEPT_LABEL,
   payDerivedPct: PAY_DERIVED_PCT, defaultRadiusMi: DEFAULT_RADIUS_MI, defaultStaleDays: DEFAULT_STALE_DAYS,
   employmentTypes: EMPLOYMENT_TYPES, notStated: NOT_STATED, postedBy: POSTED_BY, defaultSources: DEFAULT_SOURCES,
-  configVersion: CONFIG_VERSION,
+  defaultConnections: DEFAULT_CONNECTIONS, configVersion: CONFIG_VERSION,
 };
 
 module.exports = {
   migrateConfig, criteriaFromConfig, scoreJob, matchRole, ageAdjust, acceptFor, payBands, industryRequired, radiusFor,
+  jobrightPlan,
   ACCEPT, ACCEPT_LABEL, GRADE_CUTOFFS, RULES, CONFIG_VERSION, DEFAULT_RADIUS_MI, DEFAULT_STALE_DAYS,
 };
