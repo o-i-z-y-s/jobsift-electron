@@ -1,7 +1,7 @@
 {
   "name": "jobsift",
   "productName": "JobSift",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Automated job search pipeline",
   "main": "src/main.js",
   "author": "o-i-z-y-s",
