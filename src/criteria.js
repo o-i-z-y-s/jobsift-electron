@@ -574,7 +574,13 @@ const RULES = {
   defaultConnections: DEFAULT_CONNECTIONS, configVersion: CONFIG_VERSION,
 };
 
+// The one country JobSift searches. The state list in the setup, the
+// evaluator's location rules, geocoding, and every search are for this
+// country, so a role elsewhere is never accepted.
+const COUNTRY = { name: 'United States', code: 'US' };
+
 module.exports = {
+  COUNTRY,
   migrateConfig, criteriaFromConfig, scoreJob, matchRole, ageAdjust, acceptFor, payBands, industryRequired, radiusFor,
   jobrightPlan,
   ACCEPT, ACCEPT_LABEL, GRADE_CUTOFFS, RULES, CONFIG_VERSION, DEFAULT_RADIUS_MI, DEFAULT_STALE_DAYS,

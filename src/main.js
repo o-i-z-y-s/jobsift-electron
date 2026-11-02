@@ -12,12 +12,23 @@ const {
 } = require('electron');
 const path = require('path');
 const fs   = require('fs');
+const crypto = require('crypto');
 
 const cfgModule  = require('./config');
 const { RULES, jobrightPlan } = require('./criteria');
 const scheduler  = require('./scheduler');
 const connections = require('./connections');
+const applied = require('./applied');
+const { newListings } = require('./sources');
 const boards     = require('./boards');
+
+// A fingerprint of the code that judges roles, saved with each run's results,
+// so a run can tell whether an earlier run judged its roles the same way.
+const EVALUATOR_ID = (() => {
+  const hash = crypto.createHash('sha256');
+  for (const f of ['eval.js', 'criteria.js', 'sources.js']) hash.update(fs.readFileSync(path.join(__dirname, f)));
+  return hash.digest('hex').slice(0, 16);
+})();
 
 // Force the app name so the userData directory is ALWAYS %APPDATA%/JobSift,
 // regardless of how the app is launched. When launched as `electron .` the name
@@ -86,6 +97,13 @@ function knownBoards() {
   return _kb;
 }
 
+// The fields of a role the applied records use, as strings, or null without an id.
+function appliedRole(r) {
+  if (!r || typeof r.id !== 'string' || !r.id) return null;
+  const s = v => (typeof v === 'string' ? v.slice(0, 2000) : '');
+  return { id: s(r.id), company: s(r.company), role_title: s(r.role_title), apply_url: s(r.apply_url) };
+}
+
 // What the config page shows: counts, the import date, and each company with
 // its board status. No person's name is included.
 function connectionsSummary() {
@@ -114,78 +132,6 @@ function importConnectionsText(text) {
 }
 
 const SCAN_LABELS = { 1: 'Past 24 hours', 3: 'Past 3 days', 7: 'Past week', 30: 'Past 30 days' };
-
-// ── Requisition-id dedup (all platforms, both sources) ────────────────────────
-// The same job is often listed many times (e.g. once per authorized state) with
-// distinct jids and apply URLs but one underlying requisition. atsUrlKey turns a
-// supported ATS apply URL into a canonical "platform:id" key. Because Jobright's
-// "Original Job Post" link and the direct ATS fetch point at the SAME posting,
-// both yield the same key, so duplicates collapse across both sources and across
-// every hiring system JobSift reads.
-function atsUrlKey(url) {
-  if (!url) return '';
-  let u;
-  try { u = new URL(url); } catch { return ''; }
-  const host = u.host.toLowerCase();
-  const urlPath = u.pathname || '';   // NOT `path`: that would shadow the path module
-  const UUID = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
-  let m;
-  if (host.includes('greenhouse.io')) {            // boards.greenhouse.io/{board}/jobs/{numericId}
-    m = urlPath.match(/\/jobs\/(\d+)/);
-    if (m) return `gh:${m[1]}`;
-  }
-  if (host.includes('lever.co')) {                 // jobs.lever.co/{slug}/{uuid}
-    m = urlPath.match(UUID);
-    if (m) return `lv:${m[1].toLowerCase()}`;
-  }
-  if (host.includes('ashbyhq.com')) {              // jobs.ashbyhq.com/{slug}/{uuid}
-    m = urlPath.match(UUID);
-    if (m) return `as:${m[1].toLowerCase()}`;
-  }
-  if (host.includes('myworkdayjobs.com') || host.includes('myworkdaysite.com')) {   // .../...{title}_{reqId}  (one per state)
-    m = urlPath.match(/_([A-Za-z]{1,5}-?\d{4,})(?:[-_]\d{1,3})?$/)
-     || urlPath.match(/([A-Za-z]{1,5}-?\d{4,})(?:[-_]\d{1,3})?(?:[/?#]|$)/);
-    // myworkdaysite.com is shared by many companies: the company is in the path.
-    const tenant = host.includes('myworkdaysite.com') ? (urlPath.match(/\/recruiting\/([^/]+)\//i) || [])[1] : '';
-    if (m) return `wd:${host}${tenant ? '/' + tenant.toLowerCase() : ''}:${m[1].toUpperCase()}`;
-  }
-  if (host === 'jobs.gem.com') {                   // jobs.gem.com/{board}/{id}
-    m = urlPath.match(/^\/[^/]+\/([^/?#]+)/);
-    if (m) return `gm:${m[1]}`;
-  }
-  if (host.endsWith('rippling.com')) {             // ats.rippling.com/{board}/jobs/{uuid}
-    m = urlPath.match(UUID);
-    if (m) return `rp:${m[1].toLowerCase()}`;
-  }
-  if (host.endsWith('workable.com')) {             // apply.workable.com/[{board}/]j/{shortcode}
-    m = urlPath.match(/\/j\/([A-Za-z0-9]+)/);
-    if (m) return `wk:${m[1].toUpperCase()}`;
-  }
-  if (urlPath.includes('/hcmUI/CandidateExperience/')) {   // Oracle: .../job/{id}
-    m = urlPath.match(/\/job\/(\d+)/);
-    if (m) return `or:${host}:${m[1]}`;
-  }
-  m = urlPath.match(/^\/careers\/job\/(\d+)/) || (host.endsWith('.eightfold.ai') && /[?&]pid=(\d+)/.exec(u.search));
-  if (m) return `ef:${m[1]}`;                      // Eightfold: /careers/job/{id} or ?pid={id}
-  m = urlPath.match(/^\/(?:[a-z]{2}(?:[-_][a-z]{2})?\/)?jobs\/(\d+)/i);
-  if (m) return `jobs:${host}:${m[1]}`;            // iCIMS career sites and others: /jobs/{id}
-  // Career-network sites (e.g. "{company}.jobs") that list the same role once per
-  // location as /{location}/{title-slug}/{32-hex-id}/job/. The location and hex id
-  // differ per posting, so key on host + the stable title slug.
-  m = urlPath.match(/\/([^/]+)\/[0-9a-f]{32}\/job\/?$/i);
-  if (m) return `slug:${host}:${m[1].toLowerCase()}`;
-  return '';
-}
-
-function reqKeyOf(role) {
-  const k = atsUrlKey(role.ats_url || role.apply_url || '');
-  if (k) return k;
-  // Fallback: a labeled "Reqid:" in the role text (company-scoped).
-  const text = `${role.body_text || ''} ${role.card_text || ''} ${role.required_quals || ''}`;
-  const tm = text.match(/\bReq(?:uisition)?\s*(?:id|#|no\.?)?\s*[:#]\s*([A-Za-z]{1,6}-?\d{3,})/i);
-  if (tm) return `txt:${(role.company || '').toLowerCase()}|${tm[1].toUpperCase()}`;
-  return '';
-}
 
 // ── App state ─────────────────────────────────────────────────────────────────
 
@@ -572,45 +518,17 @@ async function runPipeline(options) {
   // ── Merge + dedup ──────────────────────────────────────────────────────────
   broadcast('scrape:progress', { step: 'merge', message: 'Merging results...', pct: 72 });
 
-  // Collect ATS URLs seen in ALL prior evaluated outputs so they are skipped.
-  // Skipped entirely when includeSeen is set, so a run shows its full set.
-  const priorUrls = new Set();
-  const priorReq  = new Set();
+  // Each posting once, leaving out what an earlier run already accepted with
+  // this same evaluator (see sources.newListings). includeSeen keeps them all.
   const evalDir = evaluatedDir();
+  const priorRuns = [];
   if (!includeSeen && fs.existsSync(evalDir)) {
     for (const f of fs.readdirSync(evalDir).filter(n => n.endsWith('.json'))) {
-      try {
-        const prior = JSON.parse(fs.readFileSync(path.join(evalDir, f), 'utf8'));
-        for (const section of ['accepted', 'rejected']) {
-          for (const role of (prior[section]?.roles || [])) {
-            const u = (role.apply_url || role.ats_url || '').toLowerCase().replace(/\/$/, '');
-            if (u) priorUrls.add(u);
-            const rk = reqKeyOf(role);
-            if (rk) priorReq.add(rk);
-          }
-        }
-      } catch { /* skip malformed files */ }
+      try { priorRuns.push(JSON.parse(fs.readFileSync(path.join(evalDir, f), 'utf8'))); }
+      catch { /* skip malformed files */ }
     }
   }
-
-  const seenJids = new Set();
-  const seenUrls = new Set();
-  const seenReq  = new Set();
-  const merged   = [];
-
-  for (const r of [...jobrightRaw, ...atsRaw]) {
-    if (seenJids.has(r.jid)) continue;
-    seenJids.add(r.jid);
-    // Same requisition listed across states (same Reqid, different jid/URL)
-    // collapses here.
-    const rk = reqKeyOf(r);
-    if (rk && (seenReq.has(rk) || priorReq.has(rk))) continue;
-    const uk = (r.ats_url || '').toLowerCase().replace(/\/$/, '');
-    if (uk && (seenUrls.has(uk) || priorUrls.has(uk))) continue;
-    if (rk) seenReq.add(rk);
-    if (uk) seenUrls.add(uk);
-    merged.push(r);
-  }
+  const merged = newListings([...jobrightRaw, ...atsRaw], priorRuns, EVALUATOR_ID);
 
   const mergePayload = {
     scraped_at: new Date().toISOString(),
@@ -632,6 +550,7 @@ async function runPipeline(options) {
   // ── Eval ───────────────────────────────────────────────────────────────────
   broadcast('scrape:progress', { step: 'eval', message: 'Running scoring engine...', pct: 77 });
   const evaluated = await evalEngine.run(mergePayload, cfg);
+  evaluated.evaluator = EVALUATOR_ID;
 
   // ── Save output ────────────────────────────────────────────────────────────
   broadcast('scrape:progress', { step: 'save', message: 'Saving results...', pct: 95 });
@@ -844,6 +763,18 @@ function registerIpc() {
       if (people) out[name] = people;
     }
     return out;
+  });
+
+  // Applied roles.
+  // For the dashboard: the closest applied record for each of the given roles,
+  // keyed by role id, matched when the dashboard is shown.
+  ipcMain.handle('applied:forRoles', (_e, roles) => {
+    if (!Array.isArray(roles)) return {};
+    return applied.matchesFor(applied.load(dataDir()), roles.slice(0, 20000).map(appliedRole).filter(Boolean));
+  });
+  ipcMain.handle('applied:set', (_e, { role, applied: yes } = {}) => {
+    const r = appliedRole(role);
+    return r ? applied.setApplied(dataDir(), r, yes === true) : false;
   });
 
   // Company boards.

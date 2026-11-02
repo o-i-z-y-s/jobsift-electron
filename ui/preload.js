@@ -56,6 +56,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   removeConnections:      ()          => ipcRenderer.invoke('connections:remove'),
   getConnectionsSummary:  ()          => ipcRenderer.invoke('connections:summary'),
   connectionsForCompanies: (companies) => ipcRenderer.invoke('connections:forCompanies', companies),
+  appliedForRoles:        (roles)     => ipcRenderer.invoke('applied:forRoles', roles),
+  setApplied:             (role, yes) => ipcRenderer.invoke('applied:set', { role, applied: yes }),
   checkConnectionBoards:  ()          => ipcRenderer.invoke('connections:checkBoards'),
   stopConnectionBoardsCheck: ()       => ipcRenderer.invoke('connections:stopCheck'),
   onConnectionBoardsProgress: (cb) => {

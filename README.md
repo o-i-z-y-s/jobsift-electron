@@ -5,11 +5,12 @@ JobSift is a desktop job search pipeline built with Electron. It collects roles 
 ## What it does
 
 - Scrapes Jobright.ai using a hidden browser window that reuses your signed-in session. It searches for the roles you mark for searching on the Roles tab, using the fewest titles that cover them (shown under your roles), once for remote roles if any track accepts remote work and once around each location set on an onsite or hybrid track. Postings whose card already shows a title, company, or industry on your Avoid lists are not opened, but are still listed as rejected.
-- Pulls roles straight from company boards on Greenhouse, Lever, Ashby, Workday, Eightfold, Oracle, Gem, iCIMS career sites, Rippling, and Workable over plain HTTP; Workday, Eightfold, and Oracle boards are searched for the same titles as Jobright. Add a company by name and JobSift finds its board on any of these except Workday, Oracle, and iCIMS, which are found from the company's careers page link. JobSift also learns boards from the apply links Jobright returns, and remembers every board it finds.
+- Pulls roles straight from company boards on Greenhouse, Lever, Ashby, Workday, Eightfold, Oracle, Gem, iCIMS career sites, Rippling, and Workable over plain HTTP; Workday, Eightfold, and Oracle boards are searched for the same titles as Jobright. Several boards are read at once, but never two searches at once on the same site, and a site that asks JobSift to slow down is waited on without holding up the rest. Eightfold boards are searched around each track's location, across its state, and, when a track accepts remote work, with the site's own remote filter, since some sites label remote roles as on site. Eightfold and Oracle postings that every track rejects on location alone are listed as rejected without their full text being downloaded. Add a company by name and JobSift finds its board on any of these except Workday, Oracle, and iCIMS, which are found from the company's careers page link. JobSift also learns boards from the apply links Jobright returns, and remembers every board it finds.
 - Optionally imports your LinkedIn connections to mark roles at companies where you know someone, and, if you turn it on, to search those companies' job boards directly.
-- Merges and de-duplicates all findings, then gives each role a match score out of 100 from four signals: how well the title matches the roles you listed, pay against your track's floor, your industries, and your skills. Scores become grades A (80+), B (65+) and C (50+). Each role on the Roles tab also says which tracks accept it and which dashboard tab its jobs appear under; each track sets which grades it accepts, along with its work arrangements, pay floor and commute radius (geocoded via OpenStreetMap Nominatim with a local cache).
+- Merges and de-duplicates all findings, then gives each role a match score out of 100 from four signals: how well the title matches the roles you listed, pay against your track's floor, your industries, and your skills. Scores become grades A (80+), B (65+) and C (50+). Each role on the Roles tab also says which tracks accept it and which dashboard tab its jobs appear under; each track sets which grades it accepts, along with its work arrangements, pay floor and commute radius (geocoded via OpenStreetMap Nominatim with a local cache). A posting that names only a state matches a track whose location is in that state, and remote work limited to one state is accepted when it is your home state (set in Settings) or a track's location is in it. A remote role that names an office within a track's commute range counts as in person at that office for that track, as companies near their offices usually expect. A posting labeled on site with only the country as its location is taken as hybrid and flagged as likely heavy travel.
 - Labels every role with its employment type (Full-time, Contract and so on, or Not stated) and who posted it (the employer, a staffing firm, or a job board), and shows the same job posted by several companies once, listing the other copies. Postings made by job boards and reposting sites are rejected by default; each track can choose which employment types it accepts.
-- Shows the results in a dashboard split into accepted and rejected roles, filterable by source, track, role type, employment type, who posted it, and whether you have a connection there.
+- Shows the results in a dashboard split into accepted and rejected roles, filterable by source, track, role type, employment type, who posted it, whether you have a connection there, and whether you applied.
+- Remembers what you applied to. After you click Apply, the button asks whether you applied; answering Yes marks the role, and the same posting, a repost of it, or the same title at that company is marked in every run, past or future, for six months. Another role at that company says when you applied there. Records are kept only in `%APPDATA%/JobSift/applied.json`.
 - Runs on demand from the tray or the dashboard, or on a regular schedule.
 
 ## Requirements
@@ -44,6 +45,7 @@ Boards found by any means are kept in `%APPDATA%/JobSift/known_boards.json`.
 - Pick a scan period (past 24 hours, 3 days, week, or month) and press Run Now, from either the dashboard or the tray.
 - Sign in to Jobright within the interface; the app detects your session automatically and continues.
 - Past runs can be reopened from the Load Past Result picker.
+- Each run leaves out roles an earlier run already accepted, unless how roles are judged has changed since then; roles an earlier run rejected are always judged again. Check Include previously seen to show everything.
 
 ## Building
 
@@ -64,8 +66,9 @@ jobsift-electron/
 │   ├── scheduler.js         Daily scheduler
 │   ├── eval.js              Evaluation engine: filters, tracks, grades
 │   ├── criteria.js          Match score, grades and config migration
-│   ├── sources.js           Employment type, who posted a job, duplicate postings
+│   ├── sources.js           Employment type, who posted a job, duplicate postings, posting ids
 │   ├── connections.js       LinkedIn connections: CSV reader, company-name matching
+│   ├── applied.js           Roles you applied to: saving and matching
 │   ├── boards.js            Known job boards, company-name lookup, apply-link learning
 │   └── scraper/
 │       ├── jobright.js      Jobright scraper (hidden BrowserWindow)

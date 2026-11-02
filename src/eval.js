@@ -13,7 +13,7 @@ const fs   = require('fs');
 const path = require('path');
 const { employmentTypeOf, sourcesFromConfig, postedByAll, groupSameJob, SOURCE_RANK, NOT_STATED } = require('./sources');
 const { migrateConfig, criteriaFromConfig, scoreJob, matchRole, ageAdjust, acceptFor, industryRequired, radiusFor,
-        ACCEPT, ACCEPT_LABEL } = require('./criteria');
+        ACCEPT, ACCEPT_LABEL, COUNTRY } = require('./criteria');
 
 // ── Geocode cache ─────────────────────────────────────────────────────────────
 
@@ -36,35 +36,41 @@ function saveGeocache() {
 }
 
 let _lastNominatimCall = 0;
+let _geoQueue = Promise.resolve();
+const _geoFailed = new Set();
 
+// Nominatim allows one request a second, so lookups wait their turn even when
+// several job boards are being searched at once. Only an answer is saved:
+// "no such place" is remembered, while a failed request is remembered only
+// until the app closes and is asked again after that.
 async function geocode(query) {
   const cache = loadGeocache();
   const key = query.toLowerCase().trim();
   if (key in cache) return cache[key];
-
-  // Nominatim rate limit: 1 req/sec
-  const now = Date.now();
-  const wait = 1050 - (now - _lastNominatimCall);
-  if (wait > 0) await new Promise(r => setTimeout(r, wait));
-  _lastNominatimCall = Date.now();
-
-  try {
-    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1&countrycodes=us`;
-    const r = await fetch(url, {
-      headers: { 'User-Agent': 'JobSift-electron/0.1 (job search automation)' },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (r.status !== 200) { cache[key] = null; return null; }
-    const data = await r.json();
-    const result = data.length
-      ? { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) }
-      : null;
-    cache[key] = result;
-    return result;
-  } catch {
-    cache[key] = null;
-    return null;
-  }
+  if (_geoFailed.has(key)) return null;
+  const turn = _geoQueue.then(async () => {
+    if (key in cache) return cache[key];
+    if (_geoFailed.has(key)) return null;
+    const wait = 1050 - (Date.now() - _lastNominatimCall);
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    _lastNominatimCall = Date.now();
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1&countrycodes=${COUNTRY.code.toLowerCase()}`;
+      const r = await fetch(url, {
+        headers: { 'User-Agent': 'JobSift-electron/0.1 (job search automation)' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (r.status !== 200) { _geoFailed.add(key); return null; }
+      const data = await r.json();
+      cache[key] = data.length ? { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) } : null;
+      return cache[key];
+    } catch {
+      _geoFailed.add(key);
+      return null;
+    }
+  });
+  _geoQueue = turn.catch(() => {});
+  return turn;
 }
 
 function haversineMi(lat1, lon1, lat2, lon2) {
@@ -78,7 +84,8 @@ function haversineMi(lat1, lon1, lat2, lon2) {
 }
 
 /**
- * Returns true (in range), false (out of range), or null (geocoding failed).
+ * Returns true (in range), false (out of range), or null (no place in it,
+ * or the target, could be found on the map).
  */
 async function multiWithinRadius(loc, targetLocation, radiusMi) {
   // Split multi-city locations and check each part
@@ -86,13 +93,15 @@ async function multiWithinRadius(loc, targetLocation, radiusMi) {
   const targetCoords = await geocode(targetLocation);
   if (!targetCoords) return null;
 
+  let placed = false;
   for (const part of parts) {
     const coords = await geocode(part);
     if (!coords) continue;
+    placed = true;
     const dist = haversineMi(coords.lat, coords.lon, targetCoords.lat, targetCoords.lon);
     if (dist <= radiusMi) return true;
   }
-  return false;
+  return placed ? false : null;
 }
 
 // ── Regex builder ─────────────────────────────────────────────────────────────
@@ -167,43 +176,110 @@ const US_STATES = {
 };
 const US_ABBRS = new Set(Object.values(US_STATES));
 
-function normalizeSingleLoc(s) {
-  s = (s || '').trim();
+const COUNTRY_PART_RE = /^(?:united\s+states(?:\s+of\s+america)?|u\.?s\.?a?\.?|usa)$/i;
+const REMOTE_MARK_RE  = /\b(?:remote|virtual|telework(?:ing)?|telecommut\w*|work\s+from\s+home|wfh)\b|[-\s]home$/i;
+const PLACEHOLDER_RE  = /^(?:multiple\s+locations?|\d+\s+locations|\d{5}(?:-\d{4})?|hybrid|on-?site|in[- ]office)$/i;
+const STATE_NAMES = Object.keys(US_STATES).sort((a, b) => b.length - a.length);
+
+// The state a location part is exactly ("CA", "D.C.", "California"), or null.
+function stateOf(part) {
+  const p = String(part || '').trim();
+  const bare = p.replace(/\./g, '');
+  if (/^[A-Za-z]{2}$/.test(bare) && US_ABBRS.has(bare.toUpperCase())) return bare.toUpperCase();
+  return US_STATES[p.toLowerCase()] || null;
+}
+// The state a remote location part names anywhere ("Northern California").
+function stateNamedIn(part) {
+  const p = String(part || '').toLowerCase();
+  const name = STATE_NAMES.find(n => new RegExp(`\\b${n}\\b`).test(p));
+  return name ? US_STATES[name] : stateOf(part);
+}
+const stripRemote = p => p.replace(/\b(?:remote|virtual|telework(?:ing)?|telecommut\w*|work\s+from\s+home|wfh)\b|[-\s]*home$/ig, ' ')
+  .replace(/^[\s\-–—:]+|[\s\-–—:]+$/g, '').replace(/\s+/g, ' ').trim();
+
+// Comma parts with no remote mark, as places: "City, ST" for each city and
+// the state after it, "ST" for a state with no city, and other parts as they
+// are. A state written out right before a state ("New York, NY"), or any
+// part before D.C. ("Washington, D.C."), is a city.
+function placesOf(parts) {
+  const isState = parts.map((p, k) => {
+    if (!stateOf(p)) return false;
+    const next = k + 1 < parts.length ? stateOf(parts[k + 1]) : null;
+    return !(next === 'DC' || (next && !/^[A-Za-z]{2}$/.test(p.replace(/\./g, ''))));
+  });
+  const nStates = isState.filter(Boolean).length;
+  const place = (city, st) => (st === 'DC' && city && stateOf(city) ? 'Washington, DC' : city ? `${city}, ${st}` : st);
+  if (nStates <= 1) {
+    const k = isState.indexOf(true);
+    if (k < 0) return parts.length ? [parts.join(', ')] : [];
+    return [place(parts.find((p, n) => n !== k), stateOf(parts[k]))];
+  }
+  const out = [];
+  let cities = [];
+  parts.forEach((p, k) => {
+    if (!isState[k]) { cities.push(p); return; }
+    out.push(place(cities[0], stateOf(p)));
+    cities = [];
+  });
+  return out.concat(cities);
+}
+
+/**
+ * One location, the way job boards write it, as "City, ST", "ST" for a state
+ * with no city, "Remote - ST" for remote work limited to a state, or
+ * "Remote - US", with " / " between choices ("Chicago, IL / Remote - US").
+ * Country names, ZIP codes, and "Multiple Locations" are dropped; a location
+ * written country first ("US, CA, Santa Clara") is put in the usual order. A
+ * location outside the US keeps its own wording.
+ */
+function normalizeSingleLoc(raw) {
+  let s = (raw || '').trim();
   if (!s) return s;
   if (REMOTE_US_RE.test(s)) return 'Remote - US';
-  if (s.includes(',')) {
-    const rawParts = s.split(',').map(p => p.trim());
-    const nonRemote = rawParts.filter(p => !REMOTE_US_RE.test(p));
-    if (nonRemote.length < rawParts.length) {
-      s = nonRemote.filter(Boolean).join(', ') || 'Remote - US';
-      if (!s) return 'Remote - US';
+  // "Irvine, CA +2 more": the other locations are not given.
+  s = s.replace(/\s*\+\s*\d+\s+more\b[\s\S]*$/i, '').trim();
+  // The country first, with dashes: "USA - Austin, TX", "United States-Colorado-Aurora".
+  const lead = /^(?:united\s+states(?:\s+of\s+america)?|u\.?s\.?a?\.?)\s*[-–]\s*(.+)$/i.exec(s);
+  if (lead) {
+    const rest = lead[1].trim();
+    const dashed = rest.split(/\s*[-–]\s*/);
+    s = !rest.includes(',') && dashed.length === 2 && stateOf(dashed[0]) ? `${dashed[1]}, ${dashed[0]}` : rest;
+  }
+  // A label beside the place: "Office Hub - San Diego, CA", "St. Louis, MO - Globe".
+  const sides = s.split(/\s+[-–]\s+/);
+  if (sides.length === 2) {
+    const placed = sides.find(x => x.includes(',') && stateOf(x.split(',').pop()));
+    if (placed && !REMOTE_MARK_RE.test(s)) s = placed.trim();
+  }
+  let remote = false;
+  s = s.replace(/\(([^)]*)\)/g, (m, inner) => { if (REMOTE_MARK_RE.test(inner)) remote = true; return ' '; });
+  const remoteStates = [];
+  const parts = [];
+  for (let p of s.split(',')) {
+    p = p.trim().replace(/^us-/i, '').trim();
+    if (!p || COUNTRY_PART_RE.test(p) || PLACEHOLDER_RE.test(p)) continue;
+    if (REMOTE_MARK_RE.test(p)) {
+      remote = true;
+      const st = stateNamedIn(stripRemote(p));
+      if (st) remoteStates.push(st);
+      continue;
     }
+    parts.push(p);
   }
-  if (s.includes(',') && /\bus-[a-z]/i.test(s)) {
-    const parts = s.split(',').map(p => p.trim().replace(/^us-/i, '').trim());
-    s = parts.filter(Boolean).join(', ');
-  }
-  const m1 = /^United\s+States,\s*(.+)$/i.exec(s);
-  if (m1) s = m1[1].trim();
-  s = s.replace(US_COUNTRY_RE, '').trim().replace(/,$/, '').trim();
-  const parts = s.split(',').map(p => p.trim());
-  if (parts.length <= 2) {
-    const last = parts[parts.length - 1].trim();
-    const alreadyAbbr = last.length === 2 && US_ABBRS.has(last.toUpperCase());
-    if (!alreadyAbbr) {
-      const mapped = parts.map(p => US_STATES[p.toLowerCase()] || p);
-      s = mapped.filter(Boolean).join(', ');
-    }
-  }
-  return s;
+  const places = placesOf(parts);
+  if (!remote) return places.join(' / ');
+  // A remote part's state, or a state beside it with no city ("Remote, OR",
+  // "Northern California (Virtual)"), limits it.
+  const regionOnly = p => !p.includes(',') && stateNamedIn(p);
+  const states = [...new Set([...remoteStates, ...places.filter(regionOnly).map(stateNamedIn)])];
+  const others = places.filter(p => !regionOnly(p));
+  const remotePart = states.length === 1 ? `Remote - ${states[0]}` : 'Remote - US';
+  return [...others, remotePart].join(' / ');
 }
 
 function normalizeLocationDisplay(loc) {
   if (!loc) return loc;
-  const s = loc.trim();
-  if (s.includes(';')) return s.split(';').map(p => normalizeSingleLoc(p)).filter(Boolean).join(' / ');
-  if (s.includes('•')) return s.split('•').map(p => normalizeSingleLoc(p)).filter(Boolean).join(' / ');
-  return normalizeSingleLoc(s);
+  return loc.trim().split(/\s*[;•|/]\s*/).map(p => normalizeSingleLoc(p)).filter(Boolean).join(' / ');
 }
 
 // ── Posting age ───────────────────────────────────────────────────────────────
@@ -251,6 +327,137 @@ function wtBucket(wt) {
   if (w.includes('hybrid'))                                  return 'hybrid';
   if (w.includes('onsite') || w.includes('on-site') || w.includes('on site')) return 'in-person';
   return 'remote';
+}
+
+// ── Place ─────────────────────────────────────────────────────────────────────
+// Where a posting is and how it is worked, checked against one track before
+// anything else about the posting. Also used by the job board searches to
+// reject a posting from its search result, without fetching its text.
+
+const REMOTE_NON_USA  = /\b((?<!new\s)mexico|poland|philippines|costa\s+rica|global|worldwide|world[.\-\s]?wide|anywhere|international|emea|apac|latam|united\s+kingdom|england|uk\b|ireland|dublin|canada|toronto|vancouver|montreal|ottawa|calgary|edmonton|germany|berlin|munich|france|paris|netherlands|amsterdam|spain|madrid|italy|milan|rome|sweden|stockholm|switzerland|zurich|belgium|brussels|portugal|lisbon|australia|sydney|melbourne|india|bangalore|bengaluru|mumbai|hyderabad|pune|chennai|japan|tokyo|south\s+korea|seoul|china|beijing|shanghai|shenzhen|singapore|israel|tel\s+aviv|dubai|uae|brazil|s[aã]o\s+paulo|argentina|buenos\s+aires|colombia)\b/i;
+const ONSITE_INTERNATIONAL = /\b(canada|toronto|vancouver|montreal|ottawa|calgary|(?<!new\s)mexico|brazil|argentina|colombia|chile|costa\s+rica|ireland|poland|portugal|sweden|norway|denmark|finland|switzerland|austria|belgium|czech(?:ia|\s+republic)?|romania|hungary|greece|ukraine|china|hong\s+kong|taiwan|philippines|vietnam|thailand|malaysia|indonesia|new\s+zealand|south\s+africa|united\s+kingdom|england|wales|scotland|northern\s+ireland|netherlands|holland|amsterdam|japan|tokyo|osaka|south\s+korea|republic\s+of\s+korea|seoul|united\s+arab\s+emirates|abu\s+dhabi|dubai|israel|tel\s+aviv|germany|france|spain|italy|australia|singapore|india)\b/i;
+const FACILITY_CODE_RE = /(?:[A-Z]{1,4}\s*[-:]\s*\d{3,}|store\s+support\s+cent(?:er|re)|distribution\s+cent(?:er|re)|fulfillment\s+cent(?:er|re)|warehouse\s+\d)/i;
+// A location that offers remote work: one of its choices is remote, or it says
+// "or remote", "remote within", or only the country.
+const offersRemote = (display, raw = '') =>
+  /(?:^| \/ )Remote - /.test(display || '') || LOC_REMOTE_OPTION.test(display || '') || LOC_REMOTE_OPTION.test(raw || '');
+const LOC_REMOTE_OPTION = /\bremote\s+within\b|\bor\s+remote\b|^\s*(?:united\s+states(?:\s+of\s+america)?|u\.s\.a?|usa?|north\s+america)\s*$/i;
+
+// The full name of the state a place is in ("Irvine, CA" -> "California"),
+// or null.
+function stateNameOf(place) {
+  const parts = String(place || '').split(',').map(p => p.trim()).filter(Boolean);
+  const ab = parts.length ? stateOf(parts[parts.length - 1]) : null;
+  const name = ab && Object.keys(US_STATES).find(n => US_STATES[n] === ab);
+  return name ? name.replace(/\b[a-z]/g, c => c.toUpperCase()).replace(/\bOf\b/, 'of') : null;
+}
+
+// The state of a track's target location ("Irvine, CA" -> "CA"), or null.
+function trackState(track) {
+  const parts = String(track?.target_location || '').split(',').map(p => p.trim()).filter(Boolean);
+  return parts.length ? stateOf(parts[parts.length - 1]) : null;
+}
+
+// Whether one of a location's choices is a state alone ("CA",
+// "California, United States").
+function namesOnlyAState(location) {
+  return normalizeLocationDisplay(String(location || '').trim()).split(' / ').some(p => !!stateOf(p));
+}
+
+// The offices a location names: its choices that are a city, not remote work,
+// a state alone, or the country ("Costa Mesa, CA / Remote - US" -> ["Costa Mesa, CA"]).
+function officesOf(display) {
+  return String(display || '').split(/\s*\/\s*/).filter(p => p && !/^Remote\b/i.test(p) && !stateOf(p) && !COUNTRY_PART_RE.test(p));
+}
+
+/**
+ * One track's place gates: the location (US only, within the commute radius
+ * for a posting worked on site) and the work arrangement. Returns { reason }
+ * when the track rejects it, or { stateOnly, geoUnknown } for what could not
+ * be confirmed about the location. With anywhere, the location is not checked
+ * against the commute radius (a posting placed only in the country).
+ */
+async function placeGate(track, trackId, wbEff, locDisplay, { anywhere = false } = {}) {
+  let stateOnly = false;   // posting gives only the state, no city
+  let geoUnknown = false;
+  if (wbEff === 'remote') {
+    if (REMOTE_NON_USA.test(locDisplay)) {
+      const ll = (locDisplay || '').toLowerCase();
+      const stAbbrs = Object.values(US_STATES).join('|');
+      const hasUs = ll.includes('united states') || /\bus(?:a)?\b/.test(ll) ||
+                    new RegExp(`,\\s*(?:${stAbbrs})\\b`, 'i').test(locDisplay || '');
+      if (!hasUs) return { reason: `Geo: Remote role outside USA or global (${locDisplay})` };
+    }
+  } else if (locDisplay && track.target_location && !anywhere && COUNTRY_PART_RE.test(locDisplay.trim())) {
+    return { reason: 'Geo: No city or state given' };
+  } else if (locDisplay && track.target_location && !anywhere) {
+    // A place given only as a state matches on the state: this track's own.
+    const parts = locDisplay.split(/\s*[;•\/]\s*/).filter(Boolean);
+    const bare = parts.filter(p => stateOf(p));
+    const places = parts.filter(p => !stateOf(p)).join(' / ');
+    if (bare.some(p => stateOf(p) === trackState(track))) {
+      stateOnly = true;
+    } else if (!places) {
+      return { reason: `Geo: Only a state is given, not this track's (${locDisplay})` };
+    } else if (ONSITE_INTERNATIONAL.test(places)) {
+      return { reason: `Geo: International location (${places})` };
+    } else if (FACILITY_CODE_RE.test(places)) {
+      return { reason: `Geo: Location is a facility/store code (${places})` };
+    } else {
+      const inRange = await multiWithinRadius(places, track.target_location, radiusFor(track));
+      if (inRange === null) {
+        // Not found on the map: it passes when it names this track's state,
+        // spelled out or as a capitalized abbreviation ("Office CA HQ").
+        const tgtState = trackState(track);
+        const inTargetState = !!tgtState && places.split(/\s*\/\s*/).some(p =>
+          stateNamedIn(p) === tgtState || p.split(/[\s,]+/).some(w => /^[A-Z]{2}$/.test(w) && w === tgtState));
+        if (!inTargetState) return { reason: `Geo: Location not geocodable and not in target state (${places})` };
+        geoUnknown = true;
+      } else if (!inRange) {
+        return { reason: `Geo: Location outside commute range (${places})` };
+      }
+    }
+  }
+
+  const acceptedWt = new Set((track.work_types || []).map(w => w.toLowerCase()));
+  if (wbEff === 'in-person' && !acceptedWt.has('onsite')) return { reason: `Track ${trackId}: In-person not accepted on this track` };
+  if (wbEff === 'hybrid' && !acceptedWt.has('hybrid') && !acceptedWt.has('onsite')) return { reason: `Track ${trackId}: Hybrid not accepted on this track` };
+  if (wbEff === 'remote' && !acceptedWt.has('remote')) return { reason: `Track ${trackId}: Remote not accepted on this track` };
+  return { stateOnly, geoUnknown };
+}
+
+/**
+ * For the job boards searched by title: a function that, given a posting's
+ * place from its search result ({ location, work_type }), returns the reason
+ * every track rejects it, or null. Only postings stated as on site or hybrid
+ * are judged, and a hybrid one only when no track accepts remote work, since a
+ * description can make a hybrid posting count as remote. Anything else, and
+ * a posting with no location, returns null and is read in full.
+ */
+function placeChecker(cfgIn) {
+  const cfg = migrateConfig(cfgIn).config;
+  const tracks = {};
+  for (const t of (cfg.tracks || [])) tracks[t.key] = t;
+  const anyRemote = Object.values(tracks).some(t => (t.work_types || []).some(w => /remote/i.test(w)));
+  const check = async ({ location = '', work_type = '' }) => {
+    const wt = String(work_type);
+    if (!/hybrid|on.?site/i.test(wt)) return null;
+    const loc = normalizeLocationDisplay(String(location).trim());
+    if (!loc || offersRemote(loc, location)) return null;
+    const wbEff = wtBucket(wt);
+    if (wbEff === 'hybrid' && anyRemote) return null;
+    let reason = null;
+    for (const [trackId, track] of Object.entries(tracks)) {
+      const place = await placeGate(track, trackId, wbEff, loc);
+      if (!place.reason) return null;
+      reason = place.reason;
+    }
+    return reason;
+  };
+  // Whether any track accepts remote work, for searches that find remote
+  // roles separately.
+  check.acceptsRemote = anyRemote;
+  return check;
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
@@ -317,11 +524,7 @@ async function run(mergePayload, cfgIn) {
   const TRAVEL_HEAVY    = /\b(extensive travel|heavy travel|frequent travel|significant travel|up to 75%|up to 50%|50% travel|75% travel)\b/i;
   const DISGUISED_HYBRID = /\b([2-5]|two|three|four|five)\s*(?:[-–]\s*\d+)?\s*days?\s+(?:a|per)\s+week\s*(?:in\s*(?:the\s*)?(?:office|person|site|building))?|(?:in[\s\-]?(?:office|person|site))\s+(?:[2-5]|two|three|four|five)\s+days?\s+(?:a|per)\s+week|(?:on[\s\-]?site|in[\s\-]?office)\s+(?:presence|requirement|days?)[^.]{0,40}(?:\bweek(?:ly)?\b)/i;
   const DISGUISED_INPERSON = /(?:this\s+)?(?:role|position|job)\s+is\s+(?:fully\s+)?(?:on[\s\-]?site|in[\s\-]?person)|(?:must|required\s+to)\s+be\s+(?:on[\s\-]?site|in[\s\-]?person|in\s+(?:the\s+)?office)|100\s*%\s*(?:on[\s\-]?site|in[\s\-]?person)|fully\s+(?:on[\s\-]?site|in[\s\-]?person)(?!\s+interview)|not\s+(?:eligible|available)\s+for\s+remote|no\s+remote\s+(?:work\s+)?(?:option|available|allowed|offered)|(?:local|in[\s\-]?person)\s+candidates?\s+only/i;
-  const REMOTE_NON_USA  = /\b(global|worldwide|world[.\-\s]?wide|anywhere|international|emea|apac|latam|united\s+kingdom|england|uk\b|ireland|dublin|canada|toronto|vancouver|montreal|ottawa|calgary|edmonton|germany|berlin|munich|france|paris|netherlands|amsterdam|spain|madrid|italy|milan|rome|sweden|stockholm|switzerland|zurich|belgium|brussels|portugal|lisbon|australia|sydney|melbourne|india|bangalore|bengaluru|mumbai|hyderabad|pune|chennai|japan|tokyo|south\s+korea|seoul|china|beijing|shanghai|shenzhen|singapore|israel|tel\s+aviv|dubai|uae|brazil|s[aã]o\s+paulo|argentina|buenos\s+aires|colombia)\b/i;
-  const ONSITE_INTERNATIONAL = /\b(united\s+kingdom|england|wales|scotland|northern\s+ireland|netherlands|holland|amsterdam|japan|tokyo|osaka|south\s+korea|republic\s+of\s+korea|seoul|united\s+arab\s+emirates|abu\s+dhabi|dubai|israel|tel\s+aviv|germany|france|spain|italy|australia|singapore|india)\b/i;
-  const FACILITY_CODE_RE = /(?:[A-Z]{1,4}\s*[-:]\s*\d{3,}|store\s+support\s+cent(?:er|re)|distribution\s+cent(?:er|re)|fulfillment\s+cent(?:er|re)|warehouse\s+\d)/i;
   const REMOTE_WORK_SIGNAL = /\b(?:fully|completely|100\s*%|entirely)[\s\-]+remote\b|\bremote[\s\-]+(?:first|only|position|role|job|opportunity|eligible|work|option|friendly)\b|\bwork(?:ing)?[\s\-]+(?:from[\s\-]+home|remotely)\b|\b(?:telecommut|wfh)\b|\bthis\s+(?:role|position|job)\s+is\s+remote\b|\beligible\s+for\s+remote\b|\bremote\s+work\s+(?:is\s+)?(?:available|allowed|supported|offered)\b|\bwork\s+from\s+anywhere\b|\bno\s+office\s+requirement\b|\bremote\s+employees?\b|\bcategorized\s+as\s+(?:a\s+)?remote\b|\bwork\s+from\s+(?:home|anywhere\b|a\s+physical\s+location)|\bno\s+permanent\s+(?:corporate\s+)?office\b/i;
-  const LOC_REMOTE_OPTION = /\bremote\s+within\b|\bor\s+remote\b|^\s*(?:united\s+states(?:\s+of\s+america)?|u\.s\.a?|usa?|north\s+america)\s*$/i;
   const WORKDAY_STATE   = /\/Remote-([A-Z]{2})(?:\/|$)/i;
   const REMOTE_STATE_LOC = /\bRemote[-–,]\s*[A-Z]{2}\b|\bRemote\s+[A-Z]{2}\b/g;
   const MUST_RESIDE     = /\bmust\s+(?:be\s+)?(?:reside|located|live|be\s+based)\s+(?:in|out\s+of|within)\b/i;
@@ -339,24 +542,9 @@ async function run(mergePayload, cfgIn) {
     trackTitleBlkRe[tid] = buildRe(t.title_block || []);
   }
 
-  // Vague-state pattern from track target_locations
-  const targetStates = new Set();
-  for (const t of Object.values(tracks)) {
-    if (t.target_location) {
-      const parts = t.target_location.split(',').map(p => p.trim());
-      if (parts.length >= 2) {
-        const ab = parts[parts.length - 1].trim().toUpperCase();
-        targetStates.add(ab);
-        const fn = Object.entries(US_STATES).find(([, a]) => a === ab)?.[0];
-        if (fn) targetStates.add(fn);
-      }
-    }
-  }
-  const VAGUE_STATE_RE = targetStates.size
-    ? new RegExp(`^\\s*(?:${[...targetStates].sort((a, b) => b.length - a.length).map(s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\s*$`, 'i')
-    : /(?!)/;
 
-  const userState = cfg.user_state || '';
+  const myStates = new Set([cfg.user_state, ...Object.values(tracks).map(trackState)]
+    .filter(Boolean).map(st => String(st).toUpperCase()));
 
   // ── Evaluation loop ──────────────────────────────────────────────────────────
 
@@ -396,30 +584,35 @@ async function run(mergePayload, cfgIn) {
     return pcts.length ? Math.max(...pcts) : null;
   }
 
+  // Remote work limited to a state is open to the user when they live there
+  // (settings) or a track targets a place there. With neither set, nothing is
+  // rejected for it.
+  const yourStates = [...myStates].join(', ');
   function checkGeoRestriction(loc, ats, card, desc) {
+    if (!myStates.size) return null;
     const wm = WORKDAY_STATE.exec(ats);
     if (wm) {
       const state = wm[1].toUpperCase();
-      if (state !== userState && state !== 'US') return `State-restricted remote: ${state} only (ATS URL)`;
+      if (state !== 'US' && !myStates.has(state)) return `State-restricted remote: ${state} only (ATS URL; your states: ${yourStates})`;
     }
     const combined = (loc + ' ' + (card || '').slice(0, 200));
-    const stateMatcher = /\bRemote[-–,]\s*([A-Z]{2})\b|\bRemote\s+([A-Z]{2})\b/g;
+    const stateMatcher = /\bRemote\s*[-–,:]?\s*([A-Z]{2})\b/g;
     const states = [];
     let sm;
     while ((sm = stateMatcher.exec(combined)) !== null) {
-      states.push(sm[1] || sm[2]);
+      if (US_ABBRS.has(sm[1])) states.push(sm[1]);
     }
-    if (states.length && !states.includes(userState)) {
-      return `State-restricted remote: ${[...new Set(states)].join(', ')} (no ${userState})`;
+    if (states.length && !states.some(st => myStates.has(st))) {
+      return `State-restricted remote: ${[...new Set(states)].join(', ')} only (your states: ${yourStates})`;
     }
     if (desc && MUST_RESIDE.test(desc)) {
       const mm = MUST_RESIDE.exec(desc);
       const snippet = desc.slice(mm.index, mm.index + 120).toLowerCase();
       const foundStates = Object.entries(US_STATES)
-        .filter(([name]) => snippet.includes(name))
+        .filter(([name]) => new RegExp(`\\b${name}\\b`).test(snippet))
         .map(([, abbr]) => abbr);
-      if (foundStates.length && !foundStates.includes(userState)) {
-        return `State-restricted remote: must reside in ${foundStates.join(', ')} - no ${userState}`;
+      if (foundStates.length && !foundStates.some(st => myStates.has(st))) {
+        return `State-restricted remote: must reside in ${foundStates.join(', ')} (your states: ${yourStates})`;
       }
     }
     return null;
@@ -456,11 +649,11 @@ async function run(mergePayload, cfgIn) {
   );
 
   const locationsToGeocode = new Set();
+  // Remote choices need no place; the offices a remote role names do (see
+  // the near-office check in the track loop).
   for (const r of allResults) {
-    const wt = (r.work_type || '').toLowerCase();
-    if (wt.includes('remote')) continue;  // remote roles skip geo check
     const loc = normalizeLocationDisplay((r.location || '').trim());
-    if (loc) locationsToGeocode.add(loc);
+    for (const o of officesOf(loc)) locationsToGeocode.add(o);
   }
   // Also pre-warm all track target locations
   for (const t of geoTargets) locationsToGeocode.add(t);
@@ -504,15 +697,20 @@ async function run(mergePayload, cfgIn) {
     const locLead = loc && loc.includes(',') ? loc.split(',')[0].trim() : loc;
     if (/remote/i.test(wt) && loc &&
         !/\b(remote|united\s+states?|usa|anywhere|worldwide|nationwide|virtual|wfh|work\s+from\s+home)\b/i.test(locLead) &&
-        !/\bremote\b/i.test(allText)) {
+        !/\bremote\b/i.test(loc) && !/\bremote\b/i.test(allText)) {
       wtMut = 'Onsite';
     }
 
     const locDisplay = loc || (/remote/i.test(wtMut) ? 'Remote - US' : 'USA');
+    // "Irvine, CA +2 more": locations the listing does not name.
+    const moreUnlisted = Number(/\+\s*(\d+)\s+more\b/i.exec(r.location || '')?.[1] || 0);
     let wb  = wtBucket(wtMut);
-    const locOffersRemote = LOC_REMOTE_OPTION.test(loc || '');
-    let wbEff = locOffersRemote ? 'remote' : wb;
-    if (wbEff === 'hybrid' && REMOTE_WORK_SIGNAL.test(resps + ' ' + req + ' ' + pref)) {
+    const locOffersRemote = offersRemote(loc, r.location);
+    // Labeled on site but placed only in the country: likely heavy travel. It is
+    // taken as hybrid, with no commute check, and flagged.
+    const travelHeavy = !loc && COUNTRY_PART_RE.test(String(r.location || '').trim()) && wb === 'in-person';
+    let wbEff = travelHeavy ? 'hybrid' : locOffersRemote ? 'remote' : wb;
+    if (wbEff === 'hybrid' && !travelHeavy && REMOTE_WORK_SIGNAL.test(resps + ' ' + req + ' ' + pref)) {
       wbEff = 'remote';
     }
 
@@ -525,7 +723,8 @@ async function run(mergePayload, cfgIn) {
     // Rejected from its Jobright card by an Avoid rule, without being opened
     // (see avoidOnCard in scraper/jobright.js).
     if (r.avoided) {
-      univRej(jid,idx,title,company,salary,wtMut,wbEff,locDisplay,pct,postedDays,r.avoided,'Rejected from the Jobright card; the posting was not opened',ats,sp);
+      const where = jid.startsWith('ats_') ? "the job board's search results" : 'the Jobright card';
+      univRej(jid,idx,title,company,salary,wtMut,wbEff,locDisplay,pct,postedDays,r.avoided,`Rejected from ${where}; the posting was not opened`,ats,sp);
       done = true;
     }
     if (!done && !resps && !req && !pref) {
@@ -584,63 +783,30 @@ async function run(mergePayload, cfgIn) {
     let accepted = false;
 
     for (const [trackId, track] of Object.entries(tracks)) {
-      let locStateOnly = false;   // posting gives only the state, no city
-      let locGeoUnknown = false;
-
-      // ── Geo gate ──────────────────────────────────────────────────────────
-      if (wbEff === 'remote') {
-        if (REMOTE_NON_USA.test(locDisplay)) {
-          const ll = (locDisplay || '').toLowerCase();
-          const stAbbrs = Object.values(US_STATES).join('|');
-          const hasUs = ll.includes('united states') || /\bus(?:a)?\b/.test(ll) ||
-                        new RegExp(`,\\s*(?:${stAbbrs})\\b`, 'i').test(locDisplay || '');
-          if (!hasUs) { trackRejs[trackId] = `Geo: Remote role outside USA or global (${locDisplay})`; continue; }
+      // ── Place: where it is and how it is worked ───────────────────────────
+      // A remote role that also names offices: when this track's place is
+      // within its commute radius of one of them, the company expects you
+      // there, so the role is judged as in person at that office (hybrid, or
+      // on site when labeled so). Otherwise it stays remote, with any state limit.
+      let trackWb = wbEff, trackLoc = locDisplay, nearOffice = null;
+      if (wbEff === 'remote' && track.target_location) {
+        const offices = officesOf(locDisplay);
+        for (const o of offices) {
+          if (await multiWithinRadius(o, track.target_location, radiusFor(track))) { nearOffice = o; break; }
         }
-      } else {
-        if (locDisplay && track.target_location) {
-          if (VAGUE_STATE_RE.test(locDisplay.trim())) {
-            locStateOnly = true;
-          } else if (ONSITE_INTERNATIONAL.test(locDisplay)) {
-            trackRejs[trackId] = `Geo: International location (${locDisplay})`; continue;
-          } else if (FACILITY_CODE_RE.test(locDisplay)) {
-            trackRejs[trackId] = `Geo: Location is a facility/store code (${locDisplay})`; continue;
-          } else {
-            const radius = radiusFor(track);
-            const inRange = await multiWithinRadius(locDisplay, track.target_location, radius);
-            if (inRange === null) {
-              // Geocoding failed - state fallback
-              const tgtParts = track.target_location.split(',').map(p => p.trim());
-              const tgtStateAb = tgtParts.length >= 2 ? tgtParts[tgtParts.length - 1].trim().toUpperCase() : null;
-              let inTargetState = false;
-              if (tgtStateAb) {
-                const ll = (locDisplay || '').toLowerCase();
-                const tgtFull = Object.entries(US_STATES).find(([, a]) => a === tgtStateAb)?.[0] || '';
-                inTargetState = tgtFull && ll.includes(tgtFull) ||
-                                ll.includes(`, ${tgtStateAb.toLowerCase()}`) ||
-                                ll.endsWith(`, ${tgtStateAb.toLowerCase()}`);
-              }
-              if (!inTargetState) {
-                trackRejs[trackId] = `Geo: Location not geocodable and not in target state (${locDisplay})`; continue;
-              }
-              locGeoUnknown = true;
-            } else if (!inRange) {
-              trackRejs[trackId] = `Geo: Location outside commute range (${locDisplay})`; continue;
-            }
-          }
-        }
+        if (nearOffice) { trackWb = wb === 'in-person' ? 'in-person' : 'hybrid'; trackLoc = offices.join(' / '); }
       }
-
-      // ── Work arrangement gate ──────────────────────────────────────────────
+      const place = await placeGate(track, trackId, trackWb, trackLoc, { anywhere: travelHeavy });
+      if (place.reason) {
+        trackRejs[trackId] = nearOffice && / not accepted on this track$/.test(place.reason)
+          ? `Track ${trackId}: In person expected - you are within commute range of its ${nearOffice} office`
+          : moreUnlisted && /^Geo: Location (outside|not geocodable)/.test(place.reason)
+            ? `${place.reason} - ${moreUnlisted} more location${moreUnlisted === 1 ? '' : 's'} not listed`
+            : place.reason;
+        continue;
+      }
+      const { stateOnly: locStateOnly, geoUnknown: locGeoUnknown } = place;
       const acceptedWt = new Set((track.work_types || []).map(w => w.toLowerCase()));
-      if (wbEff === 'in-person' && !acceptedWt.has('onsite')) {
-        trackRejs[trackId] = `Track ${trackId}: In-person not accepted on this track`; continue;
-      }
-      if (wbEff === 'hybrid' && !acceptedWt.has('hybrid') && !acceptedWt.has('onsite')) {
-        trackRejs[trackId] = `Track ${trackId}: Hybrid not accepted on this track`; continue;
-      }
-      if (wbEff === 'remote' && !acceptedWt.has('remote')) {
-        trackRejs[trackId] = `Track ${trackId}: Remote not accepted on this track`; continue;
-      }
 
       // ── Employment type ───────────────────────────────────────────────────
       // An empty list accepts every type; a posting that states none passes.
@@ -650,7 +816,7 @@ async function run(mergePayload, cfgIn) {
       }
 
       // ── Disguised hybrid/in-person ─────────────────────────────────────────
-      if (wbEff === 'remote' && !acceptedWt.has('hybrid')) {
+      if (trackWb === 'remote' && !acceptedWt.has('hybrid')) {
         if (bodyArr.hybridSnippet) {
           hybridWarnings.push(`${company} - ${title}: disguised hybrid '${bodyArr.hybridSnippet}'`);
           trackRejs[trackId] = `Track ${trackId}: Disguised hybrid - '${bodyArr.hybridSnippet}'`; continue;
@@ -713,8 +879,9 @@ async function run(mergePayload, cfgIn) {
         trackRejs[trackId] = `Track ${trackId}: Salary midpoint $${(mid/1000).toFixed(0)}K below $${(salFloor/1000).toFixed(0)}K floor`; continue;
       }
 
-      // ── Geo restriction in description ────────────────────────────────────
-      const geoRej = checkGeoRestriction(locDisplay, ats, card, resps + ' ' + req);
+      // ── Remote work limited to a state ────────────────────────────────────
+      // Only for a role taken as remote: an office in range is a choice of its own.
+      const geoRej = trackWb === 'remote' ? checkGeoRestriction(locDisplay, ats, card, resps + ' ' + req) : null;
       if (geoRej) { trackRejs[trackId] = `Track ${trackId}: ${geoRej}`; continue; }
 
       // ── Scoring ───────────────────────────────────────────────────────────
@@ -742,6 +909,8 @@ async function run(mergePayload, cfgIn) {
       const flags = [], notesList = [];
       if (locStateOnly)   flags.push(`Location is listed only as "${locDisplay}" - confirm it is within commute range`);
       if (locGeoUnknown)  flags.push('Location could not be verified - confirm it is within commute range');
+      if (travelHeavy)    flags.push('Labeled on site with only the country as its location - likely heavy travel; taken as hybrid, confirm before applying');
+      if (nearOffice)     flags.push(`Listed as remote, but you are within commute range of its ${nearOffice} office - expect to work there in person`);
       const by = info[idx].by;
       if (by.kind === 'job_board' && src.reposts === 'flag') {
         flags.push(`Posted by ${company}, a job board or reposting site: look for the employer's own posting`);
@@ -753,7 +922,7 @@ async function run(mergePayload, cfgIn) {
       if (aged.note)      notesList.push(aged.note);
       if (noSalary)       notesList.push('Salary not listed');
       if (travel)         notesList.push(`${travel}% travel noted`);
-      if (wbEff === 'hybrid') notesList.push('Hybrid work arrangement');
+      if (trackWb === 'hybrid') notesList.push('Hybrid work arrangement');
       if (isTarget && mid !== null && mid < track.salary_floor) notesList.push(`Salary $${(mid/1000).toFixed(0)}K - target company wiggle room applied`);
 
       // Additive hidden-constraint flag for remote roles. Does NOT reject or
@@ -761,7 +930,7 @@ async function run(mergePayload, cfgIn) {
       // marks roles whose body hides a hybrid/state-pin/residency signal so the
       // pill renders "Remote?" and the detail lands in the expandable notes.
       let arrangementUncertain = false;
-      if (wbEff === 'remote') {
+      if (trackWb === 'remote') {
         const hidden = [];
         if (bodyArr.hybridSnippet)    hidden.push(`possible hybrid: '${bodyArr.hybridSnippet}'`);
         if (bodyArr.statePins.length) hidden.push(`location-pinned: ${bodyArr.statePins.join(', ')}`);
@@ -775,7 +944,7 @@ async function run(mergePayload, cfgIn) {
 
       const prescreen = {
         title:       { pass: true,  note: 'Title accepted' },
-        arrangement: { pass: true,  note: `Work arrangement: ${wbEff} accepted on ${track.label}` },
+        arrangement: { pass: true,  note: `Work arrangement: ${trackWb} accepted on ${track.label}` },
         salary:      {
           pass: !(noSalary && track.reject_if_no_salary),
           note: noSalary
@@ -789,7 +958,7 @@ async function run(mergePayload, cfgIn) {
 
       acceptedRaw.push({
         jid, idx, track: trackId, role_cat: roleTypeOf(title, trackId),
-        company, title, salary, work_type: wtMut, work_type_eff: wbEff,
+        company, title, salary, work_type: wtMut, work_type_eff: trackWb,
         location: locDisplay, match_pct: pct, posted_days: postedDays,
         match: { score: match.score, parts: match.parts },
         fit: match.grade, grade: aged.grade, prescreen, flags, notes: notesList.join('; '),
@@ -1064,4 +1233,4 @@ async function run(mergePayload, cfgIn) {
   };
 }
 
-module.exports = { run };
+module.exports = { run, placeChecker, saveGeocache, stateNameOf, namesOnlyAState };

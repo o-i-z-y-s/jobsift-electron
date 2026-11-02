@@ -8,7 +8,7 @@
  */
 
 const { BrowserWindow } = require('electron');
-const { jobrightPlan } = require('../criteria');
+const { jobrightPlan, COUNTRY } = require('../criteria');
 const { cardFields } = require('../sources');
 
 // ── Selectors (verified against live Jobright DOM 2026-04-29) ─────────────────
@@ -68,7 +68,7 @@ async function js(win, code) {
 const BASE =
   'https://jobright.ai/jobs/search' +
   '?searchType=job_title' +
-  '&country=US' +
+  `&country=${COUNTRY.code}` +
   '&isH1BOnly=false' +
   '&excludeStaffingAgency=false' +
   '&excludeSecurityClearance=false' +

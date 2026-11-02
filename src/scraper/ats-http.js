@@ -10,9 +10,10 @@
  * Output format is identical to jobright.js so eval.js merges them cleanly.
  */
 
-const { criteriaFromConfig, jobrightPlan } = require('../criteria');
+const { criteriaFromConfig, jobrightPlan, COUNTRY } = require('../criteria');
 const { companyKey, companyWords } = require('../connections');
 const boards = require('../boards');
+const { placeChecker, stateNameOf, namesOnlyAState } = require('../eval');
 
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
@@ -20,14 +21,72 @@ const USER_AGENT =
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+// A pause that ends early when the signal aborts.
+function sleep(ms, signal = null) {
+  return new Promise(resolve => {
+    if (signal?.aborted) return resolve();
+    const done = () => { clearTimeout(timer); signal?.removeEventListener('abort', done); resolve(); };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
+  });
+}
+
+// ── Rate limits ───────────────────────────────────────────────────────────────
+// A board that answers HTTP 429 (too many requests) is waited on before the
+// retry: as long as its Retry-After asks, up to MAX_WAIT, and at least the
+// RATE_BACKOFFS step. Its host then gets a gap before every later request in
+// the run, starting at 1 second and doubling with each 429, up to MAX_GAP.
+// Boards are read in parallel lanes (see run()), so a wait holds up only the
+// lane of the board that asked for it.
+
+const RATE_BACKOFFS = [5000, 10000, 20000];
+const MAX_WAIT = 30000;
+const MAX_GAP  = 8000;
+const hostGap  = new Map();   // host -> ms between requests
+const hostNext = new Map();   // host -> earliest time of its next request
+
+const hostOfUrl = url => { try { return new URL(url).hostname; } catch { return ''; } };
+
+function retryAfterMs(r) {
+  const v = r.headers.get('retry-after');
+  if (!v) return 0;
+  const ms = /^\d+$/.test(v.trim()) ? Number(v) * 1000 : Date.parse(v) - Date.now();
+  return ms > 0 ? Math.min(ms, MAX_WAIT) : 0;
+}
+
+async function paceHost(host, signal) {
+  const gap = hostGap.get(host);
+  if (!gap) return;
+  const wait = (hostNext.get(host) || 0) - Date.now();
+  if (wait > 0) await sleep(wait, signal);
+  hostNext.set(host, Date.now() + gap);
+}
+
+function slowHost(host) {
+  hostGap.set(host, Math.min(Math.max((hostGap.get(host) || 0) * 2, 1000), MAX_GAP));
+}
+
+// Why a request failed, for the run feed: the status a board kept answering
+// after the retries, or the network error.
+function whyFailed(err) {
+  if (err.status) return `HTTP ${err.status}${err.retried ? ' after retries' : ''}`;
+  return `network error - ${withCause(err).message}`;
+}
+
+// fetch() reports most network failures as "fetch failed", with the reason
+// (ECONNRESET, ENOTFOUND, a certificate error ...) only in its cause.
+function withCause(err) {
+  const why = err?.cause?.code || err?.cause?.message;
+  if (why && !String(err.message).includes(why)) err.message = `${err.message} (${why})`;
+  return err;
 }
 
 async function fetchRetry(url, opts = {}, retries = 3, abortSignal = null) {
   const backoffs = [500, 1000, 2000];
   const retryOn  = new Set([429, 500, 502, 503, 504]);
+  const host = hostOfUrl(url);
   for (let i = 0; i <= retries; i++) {
+    await paceHost(host, abortSignal);
     // Combine per-request timeout with caller's cancellation signal so that
     // Cancel Scrape immediately stops in-flight HTTP requests.
     const timeoutSig = AbortSignal.timeout(15000);
@@ -45,20 +104,26 @@ async function fetchRetry(url, opts = {}, retries = 3, abortSignal = null) {
         signal,
       });
       if (retryOn.has(r.status)) {
+        if (r.status === 429) slowHost(host);
         if (i < retries) {
-          await sleep(backoffs[i] || 2000);
+          const wait = r.status === 429
+            ? Math.max(retryAfterMs(r), RATE_BACKOFFS[i] || MAX_WAIT)
+            : backoffs[i] || 2000;
+          if (r.status === 429) console.log(`  ${host} asked to slow down; waiting ${Math.round(wait / 1000)}s`);
+          await sleep(wait, abortSignal);
+          if (abortSignal?.aborted) throw new Error('Canceled');
           continue;
         }
         // Retries exhausted on a 5xx/429: throw rather than hand back an error
         // response, so callers treat it as a failed fetch instead of parsing the
         // gateway-error body as job content.
-        throw new Error(`HTTP ${r.status} after ${retries} retries: ${url}`);
+        throw Object.assign(new Error(`HTTP ${r.status} after ${retries} retries: ${url}`), { status: r.status, retried: true });
       }
       return r;
     } catch (err) {
       // Don't retry if the user explicitly canceled
-      if (abortSignal?.aborted || i === retries) throw err;
-      await sleep(backoffs[i] || 2000);
+      if (abortSignal?.aborted || i === retries) throw withCause(err);
+      await sleep(backoffs[i] || 2000, abortSignal);
     }
   }
 }
@@ -250,6 +315,9 @@ function buildTitleFilter(roles, block) {
 }
 
 // ── Greenhouse ────────────────────────────────────────────────────────────────
+// {board}/jobs lists every posting's title and location, which stays small on
+// the largest boards; each matching title's text, pay, and offices come from
+// {board}/jobs/{id}.
 
 const GH_API = 'https://boards-api.greenhouse.io/v1/boards';
 const GH_STATES = new Set([
@@ -317,8 +385,8 @@ async function ghSalaryFromDetail(slug, jobId, prefetched) {
 // progress feed, which is how a rotted slug or a blocked endpoint goes unnoticed
 // for weeks. Every early return records why here, and run() reports the list.
 const boardFailures = [];
-function noteFailure(source, company, reason) {
-  boardFailures.push({ source, company, reason });
+function noteFailure(source, company, reason, partly = false) {
+  boardFailures.push({ source, company, reason, partly });
   console.log(`  [${source}] ${company}: ${reason}`);
 }
 
@@ -328,16 +396,18 @@ function noteFailure(source, company, reason) {
 async function scrapeGreenhouse(company, board, titleMatches, signal = null, report = () => {}) {
   let resp;
   try {
-    resp = await fetchRetry(`${GH_API}/${board}/jobs?content=true`, {}, 3, signal);
+    resp = await fetchRetry(`${GH_API}/${board}/jobs`, {}, 3, signal);
   } catch (err) {
-    noteFailure('GH', `${company} (${board})`, `network error - ${err.message}`);
+    noteFailure('GH', `${company} (${board})`, whyFailed(err));
     return [];
   }
   if (resp.status === 404) { report('stale'); noteFailure('GH', `${company} (${board})`, 'HTTP 404 - board slug may be wrong'); return []; }
   if (resp.status !== 200) { noteFailure('GH', `${company} (${board})`, `HTTP ${resp.status}`); return []; }
   report('ok');
 
-  const jobs = (await resp.json()).jobs || [];
+  let jobs;
+  try { jobs = (await resp.json()).jobs || []; }
+  catch (err) { noteFailure('GH', `${company} (${board})`, `reading the list failed - ${withCause(err).message}`); return []; }
   const matches = [];
 
   for (const job of jobs) {
@@ -345,25 +415,23 @@ async function scrapeGreenhouse(company, board, titleMatches, signal = null, rep
     const title = job.title || '';
     if (!titleMatches(title)) continue;
 
+    // The list has titles only; each match's text, pay, and offices are one
+    // more request. A failed one keeps the role without them.
+    let detail = {};
+    try {
+      const dr = await fetchRetry(`${GH_API}/${board}/jobs/${job.id}`, {}, 3, signal);
+      detail = dr.status === 200 ? await dr.json() : {};
+    } catch { /* kept without its text */ }
+    await sleep(200);
+
     const locName     = (job.location?.name || '').trim();
-    const contentText = stripHtml(job.content || '');
+    const contentText = stripHtml(detail.content || '');
     const jobUrl      = job.absolute_url || `https://boards.greenhouse.io/${board}/jobs/${job.id}`;
 
-    let salary = ghSalary(job.metadata, contentText);
-    const needDetail = !salary || ghIsVagueLocation(locName);
-    let detailData = null;
-
-    if (needDetail) {
-      try {
-        const dr = await fetchRetry(`${GH_API}/${board}/jobs/${job.id}`, {}, 3, signal);
-        detailData = dr.status === 200 ? await dr.json() : {};
-      } catch { detailData = {}; }
-      if (!salary) salary = await ghSalaryFromDetail(board, job.id, detailData);
-    }
-
+    const salary = ghSalary(detail.metadata || job.metadata, contentText) || await ghSalaryFromDetail(board, job.id, detail);
     let finalLoc = locName;
     if (ghIsVagueLocation(locName)) {
-      const better = await ghLocationFromDetail(board, job.id, detailData);
+      const better = await ghLocationFromDetail(board, job.id, detail);
       if (better) finalLoc = better;
     }
 
@@ -396,20 +464,32 @@ async function scrapeGreenhouse(company, board, titleMatches, signal = null, rep
 
 // ── Lever ─────────────────────────────────────────────────────────────────────
 
-async function scrapeLever(company, slug, titleMatches, signal = null, report = () => {}) {
-  let resp;
-  try {
-    resp = await fetchRetry(`https://api.lever.co/v0/postings/${slug}?mode=json&limit=500`, {}, 3, signal);
-  } catch (err) {
-    noteFailure('LV', `${company} (${slug})`, `network error - ${err.message}`);
-    return [];
-  }
-  if ([404, 403].includes(resp.status)) { report('stale'); noteFailure('LV', `${company} (${slug})`, `HTTP ${resp.status} - board slug may be wrong`); return []; }
-  if (resp.status !== 200) { noteFailure('LV', `${company} (${slug})`, `HTTP ${resp.status}`); return []; }
-  report('ok');
+const LEVER_PAGE = 100;
 
-  const data = await resp.json();
-  const jobs = Array.isArray(data) ? data : (data.data || []);
+async function scrapeLever(company, slug, titleMatches, signal = null, report = () => {}) {
+  // Read LEVER_PAGE postings at a time until a short page.
+  const label = `${company} (${slug})`;
+  const jobs = [];
+  for (let skip = 0; ; skip += LEVER_PAGE) {
+    if (signal?.aborted) break;
+    let data;
+    try {
+      const resp = await fetchRetry(`https://api.lever.co/v0/postings/${slug}?mode=json&skip=${skip}&limit=${LEVER_PAGE}`, {}, 3, signal);
+      if (!skip && [404, 403].includes(resp.status)) { report('stale'); noteFailure('LV', label, `HTTP ${resp.status} - board slug may be wrong`); return []; }
+      if (resp.status !== 200) throw Object.assign(new Error(`HTTP ${resp.status}`), { status: resp.status });
+      data = await resp.json();
+    } catch (err) {
+      const why = whyFailed(err);
+      if (!skip) { noteFailure('LV', label, why); return []; }
+      noteFailure('LV', label, `read partly, kept ${jobs.length} postings - ${why}`, true);
+      break;
+    }
+    if (!skip) report('ok');
+    const page = Array.isArray(data) ? data : (data.data || []);
+    jobs.push(...page);
+    if (page.length < LEVER_PAGE) break;
+    await sleep(200);
+  }
   const matches = [];
 
   for (const job of jobs) {
@@ -726,24 +806,22 @@ function wdSitePath(baseUrl, tenant, site) {
   return /\.myworkdaysite\.com$/i.test(new URL(baseUrl).hostname) ? `recruiting/${tenant}/${site}` : site;
 }
 
-async function fetchWdDescription(baseUrl, tenant, site, jobId, extPath, signal = null) {
-  const detailUrl = `${baseUrl}/wday/cxs/${tenant}/${site}/jobs/${jobId}`;
-  for (const [method, extra] of [
-    ['GET',  {}],
-    ['POST', { headers: { 'Content-Type': 'application/json' }, body: '{}' }],
-  ]) {
-    if (signal?.aborted) return {};
-    try {
-      const r = await fetchRetry(detailUrl, { method, ...extra }, 3, signal);
-      if (r.status === 200) {
-        const parsed = parseWdApi(await r.json());
-        if (parsed.desc || parsed.req) {
-          parsed.method = `api_${method.toLowerCase()}`;
-          return parsed;
-        }
-      }
-    } catch { /* try next */ }
-  }
+// A posting's detail: { desc, req, method, locations }. The board's data
+// for the posting (its search path, under /wday/cxs) has the text and every
+// location; the posting's web page is the fallback, with the text only.
+async function fetchWdDescription(baseUrl, tenant, site, extPath, signal = null) {
+  if (signal?.aborted) return {};
+  try {
+    const r = await fetchRetry(`${baseUrl}/wday/cxs/${tenant}/${site}${extPath}`, {}, 3, signal);
+    if (r.status === 200) {
+      const data = await r.json();
+      const parsed = parseWdApi(data);
+      const info = data?.jobPostingInfo || {};
+      parsed.locations = [info.location, ...(Array.isArray(info.additionalLocations) ? info.additionalLocations : [])]
+        .filter(l => typeof l === 'string' && l.trim());
+      if (parsed.desc || parsed.req) return parsed;
+    }
+  } catch { /* the web page below */ }
   const pageUrl = `${baseUrl}/en-US/${wdSitePath(baseUrl, tenant, site)}${extPath}`;
   try {
     const r = await fetchRetry(pageUrl, {}, 3, signal);
@@ -771,7 +849,7 @@ async function scrapeWorkday(company, baseUrl, tenant, site, searchTerms, titleM
           body:    JSON.stringify({ appliedFacets: {}, limit: 20, offset, searchText: keyword }),
         }, 3, signal);
       } catch (err) {
-        noteFailure('WD', company, `network error - ${err.message}`);
+        noteFailure('WD', company, whyFailed(err));
         break;
       }
       if ([403, 404, 422].includes(r.status)) {
@@ -816,15 +894,15 @@ async function scrapeWorkday(company, baseUrl, tenant, site, searchTerms, titleM
     const extPath = job.externalPath || '';
     const jobId   = wdJobId(extPath);
     const jobUrl  = extPath ? `${baseUrl}/en-US/${wdSitePath(baseUrl, tenant, site)}${extPath}` : '';
-    const locName = job.locationsText || '';
-    const wt      = normalizeWorkType(locName);
-    const sp      = searchPass(locName, wt);
-
     let detail = {};
-    if (jobId && extPath) {
-      detail = await fetchWdDescription(baseUrl, tenant, site, jobId, extPath, signal);
+    if (extPath) {
+      detail = await fetchWdDescription(baseUrl, tenant, site, extPath, signal);
       await sleep(400);
     }
+    // The list gives one location or a count ("3 Locations"); the detail has them all.
+    const locName = detail.locations?.length ? detail.locations.join('; ') : (job.locationsText || '');
+    const wt      = normalizeWorkType(locName);
+    const sp      = searchPass(locName, wt);
 
     const desc = detail.desc || '';
     const req  = detail.req  || '';
@@ -880,7 +958,7 @@ function hashCode(s) {
 
 // One posting in the record format the other scrapers build by hand. text is
 // the description as plain text; salary, when not given, is read from it.
-function atsRecord({ jid, company, title, location = '', workType = '', text = '', salary = '', url, employmentType = '' }) {
+function atsRecord({ jid, company, title, location = '', workType = '', text = '', salary = '', url, employmentType = '', avoided = null }) {
   const [resp_, req_, pref_] = splitDescription(text);
   const wt = workType || normalizeWorkType(location);
   return {
@@ -898,10 +976,25 @@ function atsRecord({ jid, company, title, location = '', workType = '', text = '
     required_quals:   req_.slice(0, 2500),
     preferred_quals:  pref_.slice(0, 2000),
     ats_url:          url,
-    error:            text ? null : 'description_unavailable',
+    error:            text || avoided ? null : 'description_unavailable',
     search_pass:      searchPass(location, wt),
+    ...(avoided ? { avoided } : {}),
   };
 }
+
+// Splits the matches of a search into those to read in full and those every
+// track rejects on their place alone (see eval.placeChecker), which keep the
+// reason and are not opened. Returns [[item, reason or null]].
+async function byPlace(items, placeOf, placeCheck) {
+  const out = [];
+  for (const it of items) out.push([it, await placeCheck(placeOf(it))]);
+  return out;
+}
+const noPlaceCheck = Object.assign(async () => null, { acceptsRemote: true });
+const placeNote = decided => {
+  const n = decided.filter(([, why]) => why).length;
+  return n ? `, ${n} rejected on location without opening` : '';
+};
 
 // GET a URL as JSON. Throws an Error with .status when the answer is not a
 // 200 with a JSON body, so callers can tell a missing board (404) from the rest.
@@ -917,30 +1010,53 @@ async function getJson(url, signal) {
 const GONE = new Set([400, 403, 404, 410]);
 function boardError(tag, label, err, report) {
   if (GONE.has(err.status)) { report('stale'); noteFailure(tag, label, `HTTP ${err.status} - board may have moved`); }
-  else noteFailure(tag, label, err.status ? `HTTP ${err.status}` : `network error - ${err.message}`);
+  else noteFailure(tag, label, whyFailed(err));
+}
+// A search by title that ended partway: the roles found so far are kept.
+function stoppedEarly(tag, label, found) {
+  const err = found.stoppedBy;
+  noteFailure(tag, label, `searched partly, kept ${found.length} - ${whyFailed(err)}`, true);
 }
 
 // Boards searched once per title, like Workday, because their lists are too
 // large to read whole. Results come most relevant first, so a title's search
-// stops after DRY_PAGES pages in a row with no matching title.
+// stops after DRY_PAGES pages in a row with no matching title not already
+// found (titles overlap, so later ones mostly find the same postings again).
 const SEARCHED_BY_TERM = new Set(['workday', 'eightfold', 'oracle']);
+// How many lanes of boards are read at once, and how many lanes the boards on
+// one shared API are split into (see run()).
+const LANES_AT_ONCE = 6;
+const SHARED_LANES  = 2;
 const DRY_PAGES = 3;
 const MAX_PAGES = 30;
 
 // fetchPage(term, page) -> { items, more }. Returns the matching items, each
-// once, in the order found.
-async function searchByTerms(terms, fetchPage, { idOf, titleOf, titleMatches, signal }) {
+// once, in the order found. A page that fails after the board has answered
+// ends the search there: the items found so far are returned, with the error
+// as their stoppedBy. A failure on the very first page is thrown.
+// keep(item), when given, must also hold for an item to count as a match;
+// with firstTermOnly, the search ends after a first title that found nothing.
+async function searchByTerms(terms, fetchPage, { idOf, titleOf, titleMatches, signal, keep = null, firstTermOnly = false }) {
   const found = new Map();
-  for (const term of terms) {
+  let answered = false;
+  for (const [t, term] of terms.entries()) {
+    if (firstTermOnly && t === 1 && !found.size) break;
     let dry = 0;
     for (let page = 0; page < MAX_PAGES && dry < DRY_PAGES; page++) {
       if (signal?.aborted) return [...found.values()];
-      const { items, more } = await fetchPage(term, page);
+      let items, more;
+      try {
+        ({ items, more } = await fetchPage(term, page));
+      } catch (err) {
+        if (!answered) throw err;
+        return Object.assign([...found.values()], { stoppedBy: err });
+      }
+      answered = true;
       let hit = false;
       for (const it of items) {
-        if (!titleMatches(titleOf(it))) continue;
+        if (!titleMatches(titleOf(it)) || (keep && !keep(it)) || found.has(idOf(it))) continue;
         hit = true;
-        if (!found.has(idOf(it))) found.set(idOf(it), it);
+        found.set(idOf(it), it);
       }
       dry = hit ? 0 : dry + 1;
       if (!more || !items.length) break;
@@ -1100,44 +1216,163 @@ async function scrapeIcims(company, { base_url }, { titleMatches, signal, report
 // {site}/api/pcsx/position_details?position_id=&domain=. A site on the newer
 // one refuses the older list with HTTP 403, so the newer is used from then on.
 
-async function scrapeEightfold(company, { base_url, domain }, { terms, titleMatches, signal, report }) {
+// Eightfold searches are limited to JobSift's country (criteria.COUNTRY),
+// since every role outside it is rejected. Its sites also allow few requests,
+// so each starts with EF_GAP between requests to it.
+const EF_GAP = 1000;
+
+// The filter options an Eightfold site offers for remote work, as search
+// parameters. The newer search lists its filters with each answer
+// (filterDef) and takes filter_<name>=<value>; the older one lists facets
+// with counts and takes <name>=<value>. Its "locations" facet is skipped: its
+// "Remote" entry does not filter.
+function efRemoteFilters(filterDef) {
+  const out = [];
+  for (const f of [...(filterDef?.smartFilters || []), ...(filterDef?.allFilters || [])]) {
+    if (!f?.filterName || !/multi_select/.test(f.type || '')) continue;
+    for (const o of f.options || []) {
+      if (typeof o?.value === 'string' && /remote/i.test(o.value)) {
+        out.push({ name: f.filterName, value: o.value, param: `&filter_${encodeURIComponent(f.filterName)}=${encodeURIComponent(o.value)}` });
+      }
+    }
+  }
+  return out;
+}
+function efRemoteFacets(facets) {
+  const out = [];
+  for (const [name, values] of Object.entries(facets || {})) {
+    if (/^locations?$/i.test(name) || !values || typeof values !== 'object') continue;
+    for (const value of Object.keys(values)) {
+      if (/remote/i.test(value)) out.push({ name, value, param: `&${encodeURIComponent(name)}=${encodeURIComponent(value)}` });
+    }
+  }
+  return out;
+}
+
+// The searches of an Eightfold board, from your tracks (criteria
+// jobrightPlan): one around each track's location, in kilometers (the unit
+// Eightfold uses) with a tenth more so its distances cannot fall short of
+// JobSift's, and one across that location's state, which keeps only postings
+// that name the state alone and is dropped for a board where the first title
+// finds none. With no location set, the whole country. remote: whether any
+// track accepts remote work. { remote, places: [{ kind, location, distance, label }] }.
+const KM_PER_MI = 1.609344;
+function efSearchPlaces(plan) {
+  const places = [];
+  const seen = new Set();
+  const add = where => {
+    const key = `${where.kind}|${where.location}|${where.distance || ''}`;
+    if (!seen.has(key)) { seen.add(key); places.push(where); }
+  };
+  for (const a of plan.areas || []) {
+    add({ kind: 'radius', location: `${a.location}, ${COUNTRY.name}`, distance: Math.ceil(a.radius * KM_PER_MI * 1.1), label: a.location });
+  }
+  for (const a of plan.areas || []) {
+    const state = stateNameOf(a.location);
+    if (state) add({ kind: 'state', location: `${state}, ${COUNTRY.name}`, label: state });
+  }
+  if (!places.length) add({ kind: 'country', location: COUNTRY.name, label: COUNTRY.name });
+  return { remote: !!plan.remote, places };
+}
+const EF_EVERYWHERE = efSearchPlaces({ remote: true, areas: [] });
+
+async function scrapeEightfold(company, { base_url, domain }, { terms, titleMatches, signal, report, placeCheck = noPlaceCheck, efPlaces = EF_EVERYWHERE }) {
   const label = `${company} (${new URL(base_url).hostname})`;
   const d = encodeURIComponent(domain);
   let newer = false;
-  const page = async (term, n) => {
+  let remoteQueries = null;   // from the site's own list of filters, once known
+  const page = async (term, n, where) => {
     const q = encodeURIComponent(term);
     if (!newer) {
       try {
-        const data = await getJson(`${base_url}/api/apply/v2/jobs?domain=${d}&query=${q}&start=${n * 10}&num=10`, signal);
+        const data = await getJson(`${base_url}/api/apply/v2/jobs?domain=${d}&query=${q}&start=${n * 10}&num=10${where.query}`, signal);
+        if (!remoteQueries) remoteQueries = efRemoteFacets(data.facets);
         const items = Array.isArray(data.positions) ? data.positions : [];
         return { items, more: n * 10 + items.length < (data.count || 0) };
-      } catch (err) { if (err.status !== 403) throw err; newer = true; }
+      } catch (err) { if (err.status !== 403) throw err; newer = true; remoteQueries = null; }
     }
-    const data = (await getJson(`${base_url}/api/pcsx/search?domain=${d}&query=${q}&location=&start=${n * 10}`, signal)).data || {};
+    const data = (await getJson(`${base_url}/api/pcsx/search?domain=${d}&query=${q}&start=${n * 10}${where.query}`, signal)).data || {};
+    if (!remoteQueries) remoteQueries = efRemoteFilters(data.filterDef);
     const items = Array.isArray(data.positions) ? data.positions : [];
     return { items, more: n * 10 + items.length < (data.count || 0) };
   };
-  let found;
+  const remoteIds = new Set();
+  const placeOf = (p, full = null) => ({
+    location: p.location || full?.location || (p.locations || []).filter(x => typeof x === 'string').join('; '),
+    work_type: remoteIds.has(p.id) ? 'Remote'
+      : workTypeWord(p.work_location_option || p.workLocationOption || full?.work_location_option || full?.workLocationOption),
+  });
+
+  // Remote roles come with the place searches only while the site offers no
+  // remote filter of its own, since the remote search below finds them then.
+  const withRemote = () => (efPlaces.remote && !remoteQueries?.length ? 1 : 0);
+  const queryOf = where => `&location=${encodeURIComponent(where.location)}` +
+    (where.distance ? `&filter_distance=${where.distance}` : '') +
+    (where.filter || `&filter_include_remote=${where.kind === 'state' ? 0 : withRemote()}`);
+  const titleOf = p => p.name || p.posting_name || '';
+  const search = (where, opts = {}) => searchByTerms(terms, async (term, n) => { const r = await page(term, n, { query: queryOf(where) }); report('ok'); return r; },
+    { idOf: p => p.id, titleOf, titleMatches, signal, ...opts });
+  const byId = new Map();
+  let answered = false;
+  const searchInto = async (where, opts, onFound) => {
+    let more;
+    try { more = await search(where, opts); }
+    catch (err) {
+      if (!byId.size && !answered) throw err;
+      noteFailure('EF', label, `search ${where.kind === 'remote' ? 'for remote roles' : `in ${where.label}`} failed - ${whyFailed(err)}`, true);
+      return;
+    }
+    answered = true;
+    if (more.stoppedBy) stoppedEarly('EF', where.kind === 'remote' ? `${label} remote search` : label, more);
+    for (const p of more) { onFound?.(p); if (!byId.has(p.id)) byId.set(p.id, p); }
+  };
+
+  // In order of value, so a site that limits requests is cut short on the
+  // least useful searches: around each track's location, then remote roles,
+  // then postings that name only the state.
   try {
-    found = await searchByTerms(terms, async (term, n) => { const r = await page(term, n); report('ok'); return r; },
-      { idOf: p => p.id, titleOf: p => p.name || p.posting_name || '', titleMatches, signal });
+    for (const where of efPlaces.places.filter(w => w.kind !== 'state')) {
+      if (signal?.aborted) break;
+      await searchInto(where);
+    }
+    // A site's own label for a posting's arrangement can be wrong: some sites
+    // mark their remote roles on site and keep the truth in a filter. When a
+    // track accepts remote work, the search is run again across the country
+    // with each filter option the site offers for remote work, and what it
+    // returns counts as remote.
+    if (placeCheck.acceptsRemote && remoteQueries?.length) {
+      for (const rq of remoteQueries) {
+        if (signal?.aborted) break;
+        await searchInto({ kind: 'remote', location: COUNTRY.name, filter: rq.param, label: 'remote' }, {}, p => remoteIds.add(p.id));
+      }
+    }
+    for (const where of efPlaces.places.filter(w => w.kind === 'state')) {
+      if (signal?.aborted) break;
+      await searchInto(where, { keep: p => namesOnlyAState(placeOf(p).location), firstTermOnly: true });
+    }
   } catch (err) { boardError('EF', label, err, report); return []; }
+  const found = [...byId.values()];
+
+  const decided = await byPlace(found, p => placeOf(p), placeCheck);
   const detail = p => (newer
     ? getJson(`${base_url}/api/pcsx/position_details?position_id=${encodeURIComponent(p.id)}&domain=${d}&hl=en`, signal).then(r => r.data || {})
     : getJson(`${base_url}/api/apply/v2/jobs/${p.id}?domain=${d}`, signal));
-  const detailed = await withDetails(found, detail, signal);
-  const matches = detailed.map(([p, full]) => {
-    const location = p.location || full?.location || (p.locations || []).filter(x => typeof x === 'string').join('; ');
+  // The older search sends each posting's text with the list.
+  const toRead = decided.filter(([p, why]) => !why && !p.job_description).map(([p]) => p);
+  const full = new Map(await withDetails(toRead, detail, signal));
+  const matches = decided.map(([p, why]) => {
+    const f = full.get(p) || null;
+    const { location, work_type } = placeOf(p, f);
     return atsRecord({
-      jid: `ats_ef_${p.id}`, company, title: p.name || p.posting_name || '', location,
-      workType: workTypeWord(p.work_location_option || p.workLocationOption || full?.work_location_option || full?.workLocationOption),
-      text: stripHtml(full?.job_description || full?.jobDescription || p.job_description || ''),
-      url: p.canonicalPositionUrl || full?.publicUrl || p.publicUrl ||
+      jid: `ats_ef_${p.id}`, company, title: p.name || p.posting_name || '', location, workType: work_type,
+      text: stripHtml(f?.job_description || f?.jobDescription || p.job_description || ''),
+      url: p.canonicalPositionUrl || f?.publicUrl || p.publicUrl ||
            (p.positionUrl ? `${base_url}${p.positionUrl}` : `${base_url}/careers/job/${p.id}`),
       employmentType: p.type || '',
+      avoided: why,
     });
   });
-  console.log(`  [EF] ${label}: ${found.length} matches`);
+  console.log(`  [EF] ${label}: ${found.length} matches${remoteIds.size ? `, ${remoteIds.size} remote by the site's filter` : ''}${placeNote(decided)}`);
   return matches;
 }
 
@@ -1149,7 +1384,7 @@ async function scrapeEightfold(company, { base_url, domain }, { terms, titleMatc
 const ORACLE_PAGE = 25;
 const oracleFinder = parts => encodeURIComponent(parts.join(','));
 
-async function scrapeOracle(company, { base_url, site }, { terms, titleMatches, signal, report }) {
+async function scrapeOracle(company, { base_url, site }, { terms, titleMatches, signal, report, placeCheck = noPlaceCheck }) {
   const host = new URL(base_url).hostname;
   const label = `${company} (${host}/${site})`;
   const api = `${base_url}/hcmRestApi/resources/latest`;
@@ -1166,25 +1401,32 @@ async function scrapeOracle(company, { base_url, site }, { terms, titleMatches, 
       return { items, more: page * ORACLE_PAGE + items.length < (node.TotalJobsCount || 0) };
     }, { idOf: r => r.Id, titleOf: r => r.Title || '', titleMatches, signal });
   } catch (err) { boardError('OR', label, err, report); return []; }
-  const detailed = await withDetails(found, async r => {
+  if (found.stoppedBy) stoppedEarly('OR', label, found);
+  const placeOf = r => ({
+    location: [...new Set([r.PrimaryLocation, ...(r.secondaryLocations || []).map(l => l.Name)].filter(Boolean))].join('; '),
+    work_type: workTypeWord(r.WorkplaceType || r.WorkplaceTypeCode),
+  });
+  const decided = await byPlace(found, placeOf, placeCheck);
+  const full = new Map(await withDetails(decided.filter(([, why]) => !why).map(([r]) => r), async r => {
     const finder = oracleFinder([`ById;Id="${r.Id}"`, `siteNumber=${site}`]);
     const data = await getJson(`${api}/recruitingCEJobRequisitionDetails?expand=all&onlyData=true&finder=${finder}`, signal);
     return (data.items || [])[0] || null;
-  }, signal);
-  const matches = detailed.map(([r, full]) => {
-    const places = [r.PrimaryLocation, ...(r.secondaryLocations || []).map(l => l.Name)].filter(Boolean);
-    const text = full
-      ? stripHtml([full.ExternalDescriptionStr, full.ExternalResponsibilitiesStr, full.ExternalQualificationsStr].filter(Boolean).join('\n'))
-      : stripHtml(r.ShortDescriptionStr || '');
+  }, signal));
+  const matches = decided.map(([r, why]) => {
+    const f = full.get(r) || null;
+    const text = f
+      ? stripHtml([f.ExternalDescriptionStr, f.ExternalResponsibilitiesStr, f.ExternalQualificationsStr].filter(Boolean).join('\n'))
+      : why ? '' : stripHtml(r.ShortDescriptionStr || '');
     return atsRecord({
-      jid: `ats_or_${host}_${r.Id}`, company, title: r.Title || '', location: [...new Set(places)].join('; '),
-      workType: workTypeWord(r.WorkplaceType || full?.WorkplaceType || r.WorkplaceTypeCode),
+      jid: `ats_or_${host}_${r.Id}`, company, title: r.Title || '', location: placeOf(r).location,
+      workType: workTypeWord(r.WorkplaceType || f?.WorkplaceType || r.WorkplaceTypeCode),
       text,
       url: `${base_url}/hcmUI/CandidateExperience/en/sites/${site}/job/${r.Id}`,
       employmentType: r.JobSchedule || r.WorkerType || '',
+      avoided: why,
     });
   });
-  console.log(`  [OR] ${label}: ${found.length} matches`);
+  console.log(`  [OR] ${label}: ${found.length} matches${placeNote(decided)}`);
   return matches;
 }
 
@@ -1202,6 +1444,9 @@ const SCRAPERS = {
   rippling:   scrapeRippling,
   workable:   scrapeWorkable,
 };
+// The short tag each system's lines in the run feed start with.
+const TAGS = { greenhouse: 'GH', lever: 'LV', ashby: 'AS', workday: 'WD', eightfold: 'EF', oracle: 'OR',
+               gem: 'GM', icims: 'IC', rippling: 'RP', workable: 'WK' };
 
 // ── Shared boards ─────────────────────────────────────────────────────────────
 
@@ -1256,6 +1501,7 @@ function sharedRoles(results, target, kb) {
 async function run({ cfg, kb, connectionCompanies = [], signal, onProgress, onChecked }) {
   const emit = (msg, pct) => { if (onProgress) onProgress(msg, pct); };
   boardFailures.length = 0;
+  hostGap.clear(); hostNext.clear();
 
   const atsBoards     = cfg.ats_boards || {};
   const titleFilters  = cfg.title_filters || {};
@@ -1264,7 +1510,8 @@ async function run({ cfg, kb, connectionCompanies = [], signal, onProgress, onCh
   const crit          = criteriaFromConfig(cfg);
   // Workday, Eightfold, and Oracle boards are searched by keyword: the same
   // titles Jobright is searched for.
-  const WD_TERMS      = jobrightPlan(cfg).titles;
+  const plan          = jobrightPlan(cfg);
+  const WD_TERMS      = plan.titles;
   const titleMatches  = buildTitleFilter(
     crit.roles,
     titleFilters.title_block   || [],
@@ -1327,28 +1574,63 @@ async function run({ cfg, kb, connectionCompanies = [], signal, onProgress, onCh
   }
 
   // ── Search ──────────────────────────────────────────────────────────────────
-  const allFound = [];
+  // Boards are read in lanes, several lanes at once. A board on its own site
+  // (Workday, Eightfold, Oracle, iCIMS) is a lane by its host; boards on one
+  // shared API (Greenhouse, Lever ...) split into SHARED_LANES lanes. A lane
+  // reads one board at a time, so no site gets more than one search at once
+  // from JobSift, while a slow or rate-limited board holds up only its lane.
+  const found = new Array(targets.length);
+  const placeCheck = placeChecker(cfg);
+  const efPlaces = efSearchPlaces(plan);
   let done = 0;
   const tick = (msg) => { emit(msg, searchFrom + (1 - searchFrom) * (++done / (targets.length || 1))); };
   const LABEL = boards.SYSTEMS;
 
-  for (const ats of Object.keys(SCRAPERS)) {
-    const group = targets.filter(t => t.ats === ats);
-    if (group.length) console.log(`\n-- ${LABEL[ats]} boards --`);
-    for (const t of group) {
-      if (signal?.aborted) break;
-      let outcome = null;
-      const report = o => { outcome = o; };
-      const b = t.board;
-      const name = t.company || `${LABEL[ats]} board ${boards.boardId(ats, b)}`;
-      let results = await SCRAPERS[ats](name, b, { terms: WD_TERMS, titleMatches, signal, report });
-      if (outcome) for (const c of [t.company, ...t.sharedBy].filter(Boolean)) kb.markSearched(c, ats, b, outcome);
-      if (t.sharedBy.length) results = sharedRoles(results, t, kb);
-      allFound.push(...results);
-      tick(`${LABEL[ats]} · ${name}: +${results.length} (${allFound.length} ATS roles so far)`);
-      await sleep(SEARCHED_BY_TERM.has(ats) ? 1000 : 500);
+  const searchBoard = async (t, i) => {
+    let outcome = null;
+    const report = o => { outcome = o; };
+    const b = t.board;
+    const name = t.company || `${LABEL[t.ats]} board ${boards.boardId(t.ats, b)}`;
+    let results;
+    try {
+      results = await SCRAPERS[t.ats](name, b, { terms: WD_TERMS, titleMatches, signal, report, placeCheck, efPlaces });
+    } catch (err) {
+      // One board's unexpected failure costs that board, not the run.
+      noteFailure(TAGS[t.ats], name, `failed - ${withCause(err).message}`);
+      results = [];
     }
-  }
+    if (outcome) for (const c of [t.company, ...t.sharedBy].filter(Boolean)) kb.markSearched(c, t.ats, b, outcome);
+    if (t.sharedBy.length) results = sharedRoles(results, t, kb);
+    found[i] = results;
+    const sofar = found.reduce((n, r) => n + (r ? r.length : 0), 0);
+    tick(`${LABEL[t.ats]} · ${name}: +${results.length} (${sofar} ATS roles so far)`);
+  };
+
+  const lanes = new Map();
+  const perApi = new Map();
+  targets.forEach((t, i) => {
+    const host = t.board?.base_url ? hostOfUrl(t.board.base_url) : '';
+    if (t.ats === 'eightfold' && host && !hostGap.has(host)) hostGap.set(host, EF_GAP);
+    const n = perApi.get(t.ats) || 0;
+    if (!host) perApi.set(t.ats, n + 1);
+    const key = host || `${t.ats}#${n % SHARED_LANES}`;
+    if (!lanes.has(key)) lanes.set(key, []);
+    lanes.get(key).push(i);
+  });
+  // Lanes with more boards, and searched-by-title boards, start first.
+  const weight = list => list.reduce((w, i) => w + (SEARCHED_BY_TERM.has(targets[i].ats) ? 5 : 1), 0);
+  const queue = [...lanes.values()].sort((a, b) => weight(b) - weight(a));
+  const worker = async () => {
+    for (let lane = queue.shift(); lane; lane = queue.shift()) {
+      for (const i of lane) {
+        if (signal?.aborted) return;
+        await searchBoard(targets[i], i);
+        await sleep(SEARCHED_BY_TERM.has(targets[i].ats) ? 1000 : 300, signal);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(LANES_AT_ONCE, queue.length) }, worker));
+  const allFound = found.filter(Boolean).flat();
 
   // Dedup by ATS URL within this run
   const seenUrls = new Set();
@@ -1362,10 +1644,16 @@ async function run({ cfg, kb, connectionCompanies = [], signal, onProgress, onCh
 
   // Surface unreachable boards in the run feed. Without this a dead board slug
   // is silently worth zero roles and reads as a quiet market.
-  if (boardFailures.length) {
-    const detail = boardFailures.map(f => `${f.company}: ${f.reason}`).join(' | ');
-    console.error(`  ATS: ${boardFailures.length} board(s) returned nothing usable - ${detail}`);
-    emit(`\u26a0 ${boardFailures.length} ATS board(s) returned nothing usable - ${detail}`, 1);
+  // A board read partly kept what it found; the rest returned nothing.
+  const partly = boardFailures.filter(f => f.partly), failed = boardFailures.filter(f => !f.partly);
+  const list = fs => fs.map(f => `${f.company}: ${f.reason}`).join(' | ');
+  if (failed.length) {
+    console.error(`  ATS: ${failed.length} board(s) returned nothing usable - ${list(failed)}`);
+    emit(`\u26a0 ${failed.length} ATS board(s) returned nothing usable - ${list(failed)}`, 1);
+  }
+  if (partly.length) {
+    console.error(`  ATS: ${partly.length} board(s) only partly read - ${list(partly)}`);
+    emit(`\u26a0 ${partly.length} ATS board(s) only partly read - ${list(partly)}`, 1);
   }
 
   return deduped;

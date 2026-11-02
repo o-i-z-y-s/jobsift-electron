@@ -13,6 +13,10 @@
  *                                   someone else's posting
  *   Duplicates       the same title with mostly the same description, posted
  *                    by different companies in one run: one job, kept once.
+ *   Posting keys     atsUrlKey() reads a posting's id on its hiring system out
+ *                    of its link, so the same posting is recognized wherever it
+ *                    is listed. newListings() keeps each posting once per run,
+ *                    leaving out those an earlier run already accepted.
  *
  * Every list used to recognize these is in the config (cfg.sources and
  * cfg.company_lists.staffing_firms), so it can be read and edited on the
@@ -173,6 +177,120 @@ function postedByAll(records, src) {
     : by));
 }
 
+// ── Posting keys ────────────────────────────────────────────────────────────
+
+/**
+ * The hiring system's id for a posting, from its apply link, as a canonical
+ * "platform:id" key, or '' for a link to no system it reads. A posting listed
+ * once per location, or found both on Jobright and on its own board, has one key.
+ */
+function atsUrlKey(url) {
+  if (!url) return '';
+  let u;
+  try { u = new URL(url); } catch { return ''; }
+  const host = u.host.toLowerCase();
+  const urlPath = u.pathname || '';   // NOT `path`: that would shadow the path module
+  const UUID = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+  let m;
+  if (host.includes('greenhouse.io')) {            // boards.greenhouse.io/{board}/jobs/{numericId}
+    m = urlPath.match(/\/jobs\/(\d+)/);
+    if (m) return `gh:${m[1]}`;
+  }
+  if (host.includes('lever.co')) {                 // jobs.lever.co/{slug}/{uuid}
+    m = urlPath.match(UUID);
+    if (m) return `lv:${m[1].toLowerCase()}`;
+  }
+  if (host.includes('ashbyhq.com')) {              // jobs.ashbyhq.com/{slug}/{uuid}
+    m = urlPath.match(UUID);
+    if (m) return `as:${m[1].toLowerCase()}`;
+  }
+  if (host.includes('myworkdayjobs.com') || host.includes('myworkdaysite.com')) {   // .../...{title}_{reqId}  (one per state)
+    m = urlPath.match(/_([A-Za-z]{1,5}-?\d{4,})(?:[-_]\d{1,3})?$/)
+     || urlPath.match(/([A-Za-z]{1,5}-?\d{4,})(?:[-_]\d{1,3})?(?:[/?#]|$)/);
+    // myworkdaysite.com is shared by many companies: the company is in the path.
+    const tenant = host.includes('myworkdaysite.com') ? (urlPath.match(/\/recruiting\/([^/]+)\//i) || [])[1] : '';
+    if (m) return `wd:${host}${tenant ? '/' + tenant.toLowerCase() : ''}:${m[1].toUpperCase()}`;
+  }
+  if (host === 'jobs.gem.com') {                   // jobs.gem.com/{board}/{id}
+    m = urlPath.match(/^\/[^/]+\/([^/?#]+)/);
+    if (m) return `gm:${m[1]}`;
+  }
+  if (host.endsWith('rippling.com')) {             // ats.rippling.com/{board}/jobs/{uuid}
+    m = urlPath.match(UUID);
+    if (m) return `rp:${m[1].toLowerCase()}`;
+  }
+  if (host.endsWith('workable.com')) {             // apply.workable.com/[{board}/]j/{shortcode}
+    m = urlPath.match(/\/j\/([A-Za-z0-9]+)/);
+    if (m) return `wk:${m[1].toUpperCase()}`;
+  }
+  if (urlPath.includes('/hcmUI/CandidateExperience/')) {   // Oracle: .../job/{id}
+    m = urlPath.match(/\/job\/(\d+)/);
+    if (m) return `or:${host}:${m[1]}`;
+  }
+  m = urlPath.match(/^\/careers\/job\/(\d+)/) || (host.endsWith('.eightfold.ai') && /[?&]pid=(\d+)/.exec(u.search));
+  if (m) return `ef:${m[1]}`;                      // Eightfold: /careers/job/{id} or ?pid={id}
+  m = urlPath.match(/^\/(?:[a-z]{2}(?:[-_][a-z]{2})?\/)?jobs\/(\d+)/i);
+  if (m) return `jobs:${host}:${m[1]}`;            // iCIMS career sites and others: /jobs/{id}
+  // Career-network sites (e.g. "{company}.jobs") that list the same role once per
+  // location as /{location}/{title-slug}/{32-hex-id}/job/. The location and hex id
+  // differ per posting, so key on host + the stable title slug.
+  m = urlPath.match(/\/([^/]+)\/[0-9a-f]{32}\/job\/?$/i);
+  if (m) return `slug:${host}:${m[1].toLowerCase()}`;
+  return '';
+}
+
+/**
+ * A posting's key across listings: its hiring system posting key (atsUrlKey),
+ * or a labeled requisition id in its text ("Req ID: R123"), scoped to the
+ * company; '' when it has neither. The same job listed once per state, or found
+ * both on Jobright and on its own board, has one key.
+ */
+function reqKeyOf(role) {
+  const k = atsUrlKey(role.ats_url || role.apply_url || '');
+  if (k) return k;
+  const text = `${role.body_text || ''} ${role.card_text || ''} ${role.required_quals || ''}`;
+  const tm = text.match(/\bReq(?:uisition)?\s*(?:id|#|no\.?)?\s*[:#]\s*([A-Za-z]{1,6}-?\d{3,})/i);
+  if (tm) return `txt:${(role.company || '').toLowerCase()}|${tm[1].toUpperCase()}`;
+  return '';
+}
+
+const linkKey = r => (r.ats_url || r.apply_url || '').toLowerCase().replace(/\/$/, '');
+
+/**
+ * The listings a run evaluates: each posting once (by id, posting key, or
+ * link), leaving out those an earlier run accepted, and so already showed,
+ * when that run used this same evaluator. Roles an earlier run rejected, and
+ * roles judged by a different evaluator, are evaluated again.
+ * priorRuns: earlier runs' saved results; evaluator: this run's EVALUATOR_ID.
+ */
+function newListings(records, priorRuns = [], evaluator = '') {
+  const priorLinks = new Set();
+  const priorKeys  = new Set();
+  for (const prior of priorRuns) {
+    if (!evaluator || prior?.evaluator !== evaluator) continue;
+    for (const role of (prior.accepted?.roles || [])) {
+      const u = linkKey(role);
+      if (u) priorLinks.add(u);
+      const k = reqKeyOf(role);
+      if (k) priorKeys.add(k);
+    }
+  }
+  const ids = new Set(), links = new Set(), keys = new Set();
+  const out = [];
+  for (const r of records) {
+    if (ids.has(r.jid)) continue;
+    ids.add(r.jid);
+    const k = reqKeyOf(r);
+    if (k && (keys.has(k) || priorKeys.has(k))) continue;
+    const u = (r.ats_url || '').toLowerCase().replace(/\/$/, '');
+    if (u && (links.has(u) || priorLinks.has(u))) continue;
+    if (k) keys.add(k);
+    if (u) links.add(u);
+    out.push(r);
+  }
+  return out;
+}
+
 // ── Duplicates ──────────────────────────────────────────────────────────────
 
 const SAME_JOB_SHARE = 0.5;   // share of description words two copies have in common
@@ -226,4 +344,5 @@ const SOURCE_RANK = { employer: 0, staffing: 1, job_board: 2 };
 module.exports = {
   EMPLOYMENT_TYPES, NOT_STATED, POSTED_BY, DEFAULT_SOURCES, SOURCE_RANK, SAME_JOB_SHARE,
   normalizeEmploymentType, employmentTypeOf, sourcesFromConfig, postedBy, postedByAll, groupSameJob, hostOf, cardFields,
+  atsUrlKey, reqKeyOf, newListings,
 };

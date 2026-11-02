@@ -342,6 +342,9 @@
     border: 1px solid color-mix(in srgb, var(--muted) 25%, transparent); }
   .badge.tag.target { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent);
     border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+  .badge.tag.applied { color: var(--tint-sky); background: color-mix(in srgb, var(--tint-sky) 12%, transparent);
+    border-color: color-mix(in srgb, var(--tint-sky) 35%, transparent); cursor: help; }
+  .badge.tag.applied-company { cursor: help; }
   .badge.tag.conn { color: var(--green); background: color-mix(in srgb, var(--green) 12%, transparent); cursor: help; }
   .badge.tag.board { color: var(--flag); background: color-mix(in srgb, var(--flag) 10%, transparent);
     border-color: color-mix(in srgb, var(--flag) 30%, transparent); }
@@ -402,6 +405,19 @@
     transition: background 0.15s;
   }
   .apply-link:hover { background: color-mix(in srgb, var(--accent) 15%, transparent); }
+  /* The Apply cell keeps one size in every state (Apply, the Applied? question,
+     and the applied date), so the column never shifts while it is used. */
+  th.apply-col, td.apply-col { width: 104px; min-width: 104px; max-width: 104px; padding-left: 4px; padding-right: 4px; }
+  .apply-cell { display: flex; flex-direction: column; align-items: center; justify-content: center;
+    min-height: 36px; font-size: 12px; white-space: nowrap; line-height: 1.4; }
+  .apply-cell button { background: none; border: none; padding: 0 3px; font: inherit; cursor: pointer; }
+  .apply-ask { color: var(--text); }
+  .apply-ask button { color: var(--accent); font-weight: 600; }
+  .apply-ask button:hover { text-decoration: underline; }
+  .apply-ask .sep { color: var(--muted); }
+  .apply-cell button.apply-done { color: var(--tint-sky); font-weight: 600; padding: 3px 4px; border-radius: 4px;
+    border: 1px solid color-mix(in srgb, var(--tint-sky) 35%, transparent); }
+  .apply-cell button.apply-done:hover { background: color-mix(in srgb, var(--tint-sky) 12%, transparent); }
 
   .expand-icon {
     color: var(--muted);
@@ -696,7 +712,7 @@
             <option value="30">Past month</option>
           </select>
         </label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);cursor:pointer" title="Show roles even if they appeared in previous runs (skips cross-run de-duplication)">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);cursor:pointer" title="Also show roles an earlier run already accepted. Roles an earlier run rejected are always judged again.">
           <input type="checkbox" class="include-seen" onchange="setIncludeSeen(this.checked)"> Include previously seen
         </label>
       </div>
@@ -726,7 +742,7 @@
         <option value="7" selected>Past week</option>
         <option value="30">Past month</option>
       </select>
-      <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer" title="Show roles even if they appeared in previous runs (skips cross-run de-duplication)">
+      <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer" title="Also show roles an earlier run already accepted. Roles an earlier run rejected are always judged again.">
         <input type="checkbox" class="include-seen" onchange="setIncludeSeen(this.checked)"> Incl. seen
       </label>
       <button onclick="runNow()" style="background:var(--accent);color:#fff;border:none;padding:7px 18px;border-radius:6px;font-size:13px;cursor:pointer;font-weight:600">&#9654; Run Now</button>
@@ -758,6 +774,10 @@
     <div class="filter-group" id="emp-filter-group"><span>Employment</span></div>
     <div class="filter-group" id="by-filter-group"><span>Posted by</span></div>
     <div class="filter-group" id="conn-filter-group" style="display:none"><span>Connections</span></div>
+    <div class="filter-group" id="applied-filter-group" style="display:none"><span>Applied</span>
+      <label><input type="checkbox" id="hide-applied" onchange="onFilterChange()"> Hide roles I've applied to
+        <small style="color:var(--muted);font-size:10px" id="applied-count"></small></label>
+    </div>
     <button class="browse-btn" style="padding:4px 10px;font-size:11px;background:var(--surface2);color:var(--muted);border:1px solid var(--border);margin-left:auto"
             onclick="resetFilters()">Reset filters</button>
   </div>
@@ -877,6 +897,14 @@ const isAtsRole = r => !!(r.id && r.id.startsWith('ats_'));
 let CONNECTIONS = {};
 let _connRequest = 0;
 
+// What the user applied to, from applied.json, matched to the loaded run's
+// roles each time it is shown: role id -> { kind, applied_at, company, title }.
+// ASKING holds the roles whose Apply was clicked and not yet answered.
+let APPLIED = {};
+let _appliedRequest = 0;
+const ASKING = new Set();
+let ROLE_BY_ID = new Map();
+
 // Track colors, assigned in configured order from the palette's --track-N
 // tokens. Values only ever come from TRACK_COLORS, never from data, so they are
 // safe in a style attribute.
@@ -994,7 +1022,7 @@ if (window.electronAPI) {
         canceled ? 'Run canceled - nothing to show yet' : 'No new listings to review';
       document.getElementById('empty-subtext').textContent = canceled
         ? 'The scrape was stopped before any roles were collected. A (empty) result was still saved.'
-        : 'Everything found was already seen in a previous run (deduplicated), or nothing matched. '
+        : 'Everything found was already accepted in a previous run, or nothing matched. '
           + 'Check the activity feed counts, try a longer period, or open a previous run with Load Past Result.';
       return;
     }
@@ -1061,7 +1089,7 @@ function openSchedule() {
   window.location.href = '../config/index.html?goto=schedule';
 }
 
-// When checked, the run skips cross-run de-duplication and shows its full set.
+// When checked, the run also shows roles an earlier run already accepted.
 let _includeSeen = false;
 function setIncludeSeen(v) {
   _includeSeen = !!v;
@@ -1344,6 +1372,11 @@ function render(data) {
   CONNECTIONS = {};
   buildFacet('conn-filter-group', 'Connections', connOf);
   loadConnectionsFor([...allRoles, ...allRejRoles]);
+  APPLIED = {};
+  ASKING.clear();
+  ROLE_BY_ID = new Map([...allRoles, ...allRejRoles].filter(r => r.id).map(r => [r.id, r]));
+  showAppliedFilter();
+  loadApplied();
 
   applyTrackFilter();
   // An open Screened Out panel still holds the previous run's rows (and their
@@ -1407,11 +1440,112 @@ function buildFacet(groupId, title, valueOf) {
 function facetHidden() {
   const off = id => new Set([...document.querySelectorAll(`#${id} input[type=checkbox]`)]
     .filter(cb => !cb.checked).map(cb => cb.dataset.val));
-  return { emp: off('emp-filter-group'), by: off('by-filter-group'), conn: off('conn-filter-group') };
+  return { emp: off('emp-filter-group'), by: off('by-filter-group'), conn: off('conn-filter-group'),
+           applied: document.getElementById('hide-applied').checked };
 }
 function passesFacets(r, hidden) {
   return !(empOf(r) && hidden.emp.has(empOf(r))) && !(byOf(r) && hidden.by.has(byOf(r))) &&
-         !(connOf(r) && hidden.conn.has(connOf(r)));
+         !(connOf(r) && hidden.conn.has(connOf(r))) && !(hidden.applied && appliedHere(r));
+}
+
+// ── Applied ────────────────────────────────────────────────────
+// A role counts as applied to when it is the same posting, the same posting
+// found again, or the same title at the same company as one the user said they
+// applied to. Another title at that company only gets a muted label.
+const appliedFields = r => ({ id: r.id, company: r.company, role_title: r.role_title, apply_url: r.apply_url });
+function appliedMatch(r) { return (r.id && APPLIED[r.id]) || null; }
+function appliedHere(r) { const m = appliedMatch(r); return !!m && m.kind !== 'company'; }
+function shortDate(iso) {
+  const d = new Date(iso);
+  return isNaN(d) ? '' : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function loadApplied() {
+  if (!window.electronAPI?.appliedForRoles) return Promise.resolve();
+  const req = ++_appliedRequest;
+  return window.electronAPI.appliedForRoles([...allRoles, ...allRejRoles].map(appliedFields)).then(found => {
+    if (req !== _appliedRequest) return;   // a newer run was loaded meanwhile
+    APPLIED = found || {};
+    showAppliedFilter();
+    if (document.getElementById('hide-applied').checked) onFilterChange();
+    else refreshAppliedInPlace();
+  }).catch(() => {});
+}
+
+// The Applied filter shows once any role in the run was applied to.
+function showAppliedFilter() {
+  const n = allRoles.filter(appliedHere).length;
+  const any = [...allRoles, ...allRejRoles].some(appliedHere);
+  document.getElementById('applied-filter-group').style.display = any ? '' : 'none';
+  document.getElementById('applied-count').textContent = `(${n})`;
+}
+
+function appliedBadge(r) {
+  const m = appliedMatch(r);
+  if (!m) return '';
+  const on = shortDate(m.applied_at);
+  if (m.kind === 'company') {
+    return `<span class="badge tag applied-company" title="${esc(`You applied to “${m.title}” at ${m.company} on ${on}.`)}">Applied to ${esc(m.company)} ${esc(on)}</span>`;
+  }
+  const why = {
+    posting: `You applied to this posting on ${on}.`,
+    repost:  `You applied to this posting on ${on}. It has the same posting ID.`,
+    title:   `You applied to “${m.title}” at ${m.company} on ${on}, the same title at this company.`,
+  }[m.kind];
+  return `<span class="badge tag applied" title="${esc(why)}">Applied ${esc(on)}</span>`;
+}
+
+// The Apply cell: Apply, then the Applied? question, then the date applied.
+function applyCellInner(r) {
+  const url = safeUrl(r.apply_url);
+  const m = appliedMatch(r);
+  if (m && (m.kind === 'posting' || m.kind === 'repost')) {
+    return `<div class="apply-cell"><button class="apply-done" title="Click if you did not apply" onclick="appliedAnswer(event, this, false)">Applied ${esc(shortDate(m.applied_at))}</button></div>`;
+  }
+  if (r.id && ASKING.has(r.id)) {
+    return `<div class="apply-cell apply-ask"><span>Applied?</span>` +
+      `<span><button onclick="appliedAnswer(event, this, true)">Yes</button><span class="sep">·</span>` +
+      `<button onclick="appliedAnswer(event, this, null)">No</button></span></div>`;
+  }
+  if (!url) return '<div class="apply-cell"><span style="color:var(--muted)">-</span></div>';
+  return `<div class="apply-cell"><a class="apply-link" href="${escHtml(url)}" target="_blank" rel="noopener noreferrer" onclick="applyClicked(event, this)">Apply →</a></div>`;
+}
+function applyCell(r) {
+  return `<td class="col-center apply-col" data-rid="${esc(r.id || '')}">${applyCellInner(r)}</td>`;
+}
+
+// The posting opens as usual; the cell then asks whether the user applied.
+function applyClicked(event, el) {
+  event.stopPropagation();
+  const r = ROLE_BY_ID.get(el.closest('td').dataset.rid);
+  if (!r) return;
+  ASKING.add(r.id);
+  setTimeout(() => refreshAppliedInPlace(r.id));   // after the link has opened
+}
+
+// Yes saves the role, No puts Apply back, and false undoes a saved one.
+function appliedAnswer(event, el, yes) {
+  event.stopPropagation();
+  const r = ROLE_BY_ID.get(el.closest('td').dataset.rid);
+  if (!r) return;
+  ASKING.delete(r.id);
+  if (yes === null || !window.electronAPI?.setApplied) { refreshAppliedInPlace(r.id); return; }
+  window.electronAPI.setApplied(appliedFields(r), yes).then(loadApplied).catch(() => refreshAppliedInPlace(r.id));
+}
+
+// Redraws the Apply cells and applied labels on the page, without rebuilding
+// the tables, so open rows stay open.
+function refreshAppliedInPlace(onlyId) {
+  document.querySelectorAll('td.apply-col').forEach(td => {
+    if (onlyId && td.dataset.rid !== onlyId) return;
+    const r = ROLE_BY_ID.get(td.dataset.rid);
+    if (r) td.innerHTML = applyCellInner(r);
+  });
+  if (onlyId) return;
+  document.querySelectorAll('span.applied-slot').forEach(slot => {
+    const r = ROLE_BY_ID.get(slot.dataset.rid);
+    if (r) slot.innerHTML = appliedBadge(r);
+  });
 }
 
 // Labels next to the role title. Full-time and "Not stated" are not shown, nor
@@ -1428,7 +1562,7 @@ function connectionBadge(r) {
 }
 
 function roleTags(r) {
-  const tags = [];
+  const tags = [`<span class="applied-slot" data-rid="${esc(r.id || '')}">${appliedBadge(r)}</span>`];
   if (isTarget(r)) tags.push('<span class="badge tag target">Target company</span>');
   const conn = connectionBadge(r);
   if (conn) tags.push(conn);
@@ -1504,6 +1638,7 @@ function resetFilters() {
   document.querySelectorAll('#type-filter-group input[type=checkbox]').forEach(cb => { cb.checked = true; });
   document.querySelectorAll('#emp-filter-group input[type=checkbox], #by-filter-group input[type=checkbox], #conn-filter-group input[type=checkbox]')
     .forEach(cb => { cb.checked = true; });
+  document.getElementById('hide-applied').checked = false;
   onFilterChange();
 }
 
@@ -1578,14 +1713,14 @@ const COLS = [
   { key: 'posted',  label: 'Posted',  sortable: true },
   { key: 'salary',  label: 'Salary',  sortable: false },
   { key: 'grade',   label: 'Grade',   sortable: true,  center: true },
-  { key: 'apply',   label: 'Apply',   sortable: false, center: true },
+  { key: 'apply',   label: 'Apply',   sortable: false, center: true, cls: 'apply-col' },
 ];
 
 function buildTableHtml(roles, sectionId) {
   const ss      = sectionState[sectionId];
   const colspan = COLS.length;
   const theadCells = COLS.map(col => {
-    const cc = col.center ? ' col-center' : '';
+    const cc = (col.center ? ' col-center' : '') + (col.cls ? ' ' + col.cls : '');
     if (!col.sortable) return `<th class="${cc.trim()}"${col.style ? ` style="${col.style}"` : ''}>${col.label}</th>`;
     const isActive = ss.sortCol === col.key;
     const icon = isActive ? (ss.sortDir === 'asc' ? '↑' : '↓') : '↕';
@@ -1636,10 +1771,7 @@ function roleRowPair(r, colspan) {
       <td>${postedHtml}</td>
       <td><span class="salary${r.salary_unknown ? ' unknown' : ''}">${esc(r.salary || 'Not listed')}</span></td>
       <td class="col-center">${gradeBadge}</td>
-      <td class="col-center">${safeUrl(r.apply_url)
-        ? `<a class="apply-link" href="${escHtml(safeUrl(r.apply_url))}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">Apply →</a>`
-        : '<span style="color:var(--muted);font-size:12px">-</span>'}
-      </td>
+      ${applyCell(r)}
     </tr>`;
 
   // Color a signal by how much of it the job earned, on the same 5-step scale.
@@ -1796,13 +1928,13 @@ const REJ_COLS = [
   { key: 'posted',   label: 'Posted',   sortable: true },
   { key: 'salary',   label: 'Salary',   sortable: false },
   { key: 'category', label: 'Reason',   sortable: true },
-  { key: 'apply',    label: 'Apply',    sortable: false, center: true },
+  { key: 'apply',    label: 'Apply',    sortable: false, center: true, cls: 'apply-col' },
 ];
 
 function buildRejTableHtml(roles) {
   const colspan = REJ_COLS.length;
   const theadCells = REJ_COLS.map(col => {
-    const cc = col.center ? ' col-center' : '';
+    const cc = (col.center ? ' col-center' : '') + (col.cls ? ' ' + col.cls : '');
     if (!col.sortable) return `<th class="${cc.trim()}"${col.style ? ` style="${col.style}"` : ''}>${col.label}</th>`;
     const isActive = rejState.sortCol === col.key;
     const icon = isActive ? (rejState.sortDir === 'asc' ? '↑' : '↓') : '↕';
@@ -1846,10 +1978,7 @@ function rejRowPair(r, colspan) {
       <td>${postedHtml}</td>
       <td><span class="salary${r.salary_unknown ? ' unknown' : ''}">${esc(r.salary || 'Not listed')}</span></td>
       <td>${catBadge}</td>
-      <td class="col-center">${safeUrl(r.apply_url)
-        ? `<a class="apply-link" href="${escHtml(safeUrl(r.apply_url))}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">Apply →</a>`
-        : '<span style="color:var(--muted);font-size:12px">-</span>'}
-      </td>
+      ${applyCell(r)}
     </tr>`;
 
   const detailRow = `
