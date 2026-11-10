@@ -5,18 +5,25 @@
  * Collects Jobright listings by driving hidden Electron BrowserWindows and
  * reading the rendered DOM via webContents.executeJavaScript().
  * Session is inherited from session.defaultSession (already authenticated).
+ *
+ * Each search is filtered by Jobright itself as far as the config allows, every
+ * card is judged on what it shows before its posting is opened, and a posting
+ * an earlier run read, found closed, or already showed is not opened again.
+ * Postings are opened at most MAX_DETAIL_WORKERS at a time, with a pause
+ * between them. When Jobright refuses a page, the session ends, or postings
+ * stop loading, nothing more is requested in that run.
  */
 
 const { BrowserWindow } = require('electron');
-const { jobrightPlan, COUNTRY } = require('../criteria');
+const { searchPlan, COUNTRY, MAX_DETAIL_WORKERS, EXPERIENCE_LEVELS } = require('../criteria');
 const { cardFields } = require('../sources');
+const evalEngine = require('../eval');
+const runlog = require('../runlog');
 
 // ── Selectors (verified against live Jobright DOM 2026-04-29) ─────────────────
 const SEL_CARD      = '[class*="job-card"]';
 const SEL_LINK      = 'a[href*="/jobs/info/"]';
 const SEL_SCORE     = '[class*="job-display-score"] [class*="percent-value"]';
-const SEL_SORT_BTN  = '[class*="recommend-sorter"] .ant-select-selector';
-const SEL_SORT_OPTS = '[class*="ant-select-item-option"]';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -63,79 +70,134 @@ async function js(win, code) {
   return win.webContents.executeJavaScript(code);
 }
 
+// A reason to request nothing more from Jobright in this run.
+class StopRun extends Error {}
+const REFUSED = new Set([401, 403, 429]);
+
+const atLogin = win => {
+  try { return /login/i.test(new URL(win.webContents.getURL()).pathname); } catch { return false; }
+};
+
+/**
+ * Loads a URL and returns its HTTP status. loadURL resolves on did-finish-load
+ * and rejects on did-fail-load, but does NOT reject on an HTTP 4xx/5xx
+ * response: an error page loads "successfully" with the error HTML as its
+ * body, so the status is read from did-navigate. Throws StopRun when Jobright
+ * refuses the page or sends it to the sign-in page.
+ */
+async function loadPage(win, url) {
+  let status = 0;
+  const began = Date.now();
+  const onNav = (_e, _url, code) => { if (typeof code === 'number') status = code; };
+  win.webContents.on('did-navigate', onNav);
+  try {
+    await win.loadURL(url);
+  } catch (err) {
+    runlog.log(`    GET ${url} -> failed: ${err.message} (${Date.now() - began} ms)`);
+    throw err;
+  } finally {
+    win.webContents.removeListener('did-navigate', onNav);
+  }
+  runlog.log(`    GET ${url} -> HTTP ${status || '?'} (${Date.now() - began} ms)${atLogin(win) ? ', sent to the sign-in page' : ''}`);
+  if (REFUSED.has(status)) throw new StopRun(`Jobright refused a page (HTTP ${status})`);
+  if (atLogin(win)) throw new StopRun('the Jobright session expired - please sign in again');
+  return status;
+}
+
 // ── URL construction ──────────────────────────────────────────────────────────
 
-const BASE =
-  'https://jobright.ai/jobs/search' +
-  '?searchType=job_title' +
-  `&country=${COUNTRY.code}` +
-  '&isH1BOnly=false' +
-  '&excludeStaffingAgency=false' +
-  '&excludeSecurityClearance=false' +
-  '&excludeUsCitizen=false' +
-  '&refresh=true&position=0&sortCondition=0';
+const SEARCH_URL = 'https://jobright.ai/jobs/search';
+const WORK_MODEL = { Onsite: 1, Remote: 2, Hybrid: 3 };
+// JobSift's employment types as Jobright's job types. Jobright has no
+// temporary type, so a track accepting temporary roles leaves job type open.
+const JOB_TYPE = { 'Full-time': 1, Contract: 2, 'Contract to hire': 2, 'Part-time': 3, Internship: 4 };
+// The posting ages Jobright offers, in days. A run's range is searched with the
+// shortest one that covers it.
+const JOBRIGHT_DAYS = [1, 3, 7, 30];
+const jobrightDays = days => JOBRIGHT_DAYS.find(d => d >= days) ?? JOBRIGHT_DAYS[JOBRIGHT_DAYS.length - 1];
 
-function taxonomyUrl(title) {
-  const tj = JSON.stringify([{ taxonomyId: '00-00-00', title }]);
-  return `&value=${encodeURIComponent(title)}&jobTaxonomyList=${encodeURIComponent(tj)}`;
+/**
+ * Jobright's own filters for what every track rejects anyway (searchPlan's
+ * jobrightFilters), as search parameters. Experience levels are numbered in
+ * Jobright's order, from 1. Industries go as written: a name that is not one
+ * of Jobright's industries leaves nothing out.
+ */
+function filterParams(f) {
+  const set = { isH1BOnly: 'false', excludeStaffingAgency: 'false', excludeUsCitizen: 'false',
+                excludeSecurityClearance: String(f.noClearance) };
+  const types = f.employmentTypes?.map(t => JOB_TYPE[t]);
+  if (types && types.every(Boolean)) set.jobTypes = [...new Set(types)].sort().join(',');
+  if (f.experienceLevels) set.seniority = f.experienceLevels.map(l => EXPERIENCE_LEVELS.indexOf(l) + 1).join(',');
+  if (f.blockedIndustries) set.excludeCompanyCategory = f.blockedIndustries.join(',');
+  return set;
 }
 
 /**
- * The Jobright searches for a run: each title in criteria.jobrightPlan(), once
- * for remote roles (when a track accepts remote work) and once for each
- * location set on an onsite or hybrid track.
+ * The Jobright searches for a run: one for each title in
+ * jobright.search_titles, around every location set on an onsite or hybrid
+ * track, for the arrangements the tracks accept. Jobright applies a location's
+ * radius to onsite and hybrid roles only, so remote roles still come from
+ * across the country; with no location set, only remote roles are searched.
+ * Each search carries Jobright's filters for what every track rejects anyway.
+ * The order of results does not matter: every card down to the match
+ * threshold is read.
  */
 function buildSearches(cfg, daysAgo) {
-  const plan = jobrightPlan(cfg);
-  const places = [];
-  if (plan.remote) places.push({ id: 'remote', label: 'remote', param: '&workModel=2' });
-  for (const a of plan.areas) {
-    places.push({
-      id: `${a.location} ${a.radius}mi`,
-      label: `near ${a.location}, ${a.radius} mi`,
-      param: '&locations=' + encodeURIComponent(JSON.stringify([{ city: a.location, radiusRange: a.radius }])),
-    });
-  }
-  const d = `&daysAgo=${daysAgo}`;
+  const plan = searchPlan(cfg);
+  const filters = filterParams(plan.jobrightFilters);
+  const near = plan.areas.map(a => `${a.location} ${a.radius}mi`);
+  const workTypes = [...plan.areas.flatMap(a => a.workTypes), ...(plan.remote ? ['Remote'] : [])];
+  const place = !plan.areas.length
+    ? (plan.remote ? { id: 'remote', set: { workModel: String(WORK_MODEL.Remote) } } : null)
+    : {
+        id: [...(plan.remote ? ['remote'] : []), ...near].join(' + '),
+        set: {
+          locations: JSON.stringify(plan.areas.map(a => ({ type: 'city', city: a.location, radiusRange: a.radius }))),
+          workModel: [...new Set(workTypes.map(w => WORK_MODEL[w]))].sort().join(','),
+        },
+      };
   const searches = [];
-  for (const place of places) {
-    for (const title of plan.titles) {
-      searches.push({
-        id:    `${title} @ ${place.id}`,
-        label: `${title} (${place.label})`,
-        url:   BASE + taxonomyUrl(title) + d + place.param,
-      });
+  if (place) {
+    for (const title of plan.jobright) {
+      const q = new URLSearchParams(filters);
+      q.set('value', title);
+      q.set('searchType', 'job_title');
+      q.set('jobTaxonomyList', JSON.stringify([{ taxonomyId: '00-00-00', title }]));
+      q.set('country', COUNTRY.code);
+      for (const [k, v] of Object.entries(place.set)) q.set(k, v);
+      q.set('daysAgo', String(jobrightDays(daysAgo)));
+      searches.push({ id: `${title} @ ${place.id}`, label: `${title} (${place.id})`, url: `${SEARCH_URL}?${q}`, maxDays: daysAgo });
     }
   }
   return searches;
 }
 
-// ── Avoid rules, checked on the card ──────────────────────────────────────────
-// The Avoid tab's titles, companies, and industries are checked against what the
-// card shows (its title, company, and industry tags) before the posting is
-// opened. A match is not opened, which saves loading it, but is still returned
-// as a record with the reason, so eval.js lists it as rejected like any other.
-// Matching is the same as eval.js: whole words, any case.
+// ── Judging cards ─────────────────────────────────────────────────────────────
 
-function wordsRe(terms) {
-  const list = (terms || []).map(t => String(t).trim()).filter(Boolean);
-  if (!list.length) return null;
-  return new RegExp('\\b(' + list.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')\\b', 'i');
+/**
+ * The cards every track rejects on what the card shows (eval.js, cardOnly),
+ * as records ready for eval.js: listed as rejected with the reason, never
+ * opened. The Jobright page stands in for the apply link, so later runs skip
+ * the role like any role already shown.
+ */
+async function screenCards(cards, cfg) {
+  const records = cards.map(c => {
+    const f = cardFields(c.card_text) || {};
+    return {
+      jid: c.jid, url: c.url, match_pct: c.match_pct, card_text: c.card_text,
+      company: f.company || null, title: f.title || null, location: f.location || null,
+      work_type: f.work_type || null, salary: f.salary || null,
+    };
+  });
+  const why = await evalEngine.run({ results: records }, cfg, { cardOnly: true });
+  return records.filter(r => why.has(r.jid)).map(r => ({ ...r, ats_url: r.url, error: null, avoided: why.get(r.jid) }));
 }
 
-/** A function returning the Avoid reason for a card's text, or null. */
-function avoidOnCard(cfg) {
-  const titles     = wordsRe(cfg.title_filters?.title_block);
-  const companies  = wordsRe(cfg.company_lists?.blocked_companies);
-  const industries = wordsRe(cfg.rejection_filters?.blocked_industries);
-  return (text) => {
-    const card = cardFields(text);
-    if (!card) return null;
-    if (titles && titles.test(card.title))         return { card, reason: `Universal: Blocked title keyword - ${card.title}` };
-    if (companies && companies.test(card.company)) return { card, reason: `Universal: Blocked company - ${card.company}` };
-    if (industries && industries.test(card.tags))  return { card, reason: 'Universal: Blocked industry domain' };
-    return null;
-  };
+// Whether two cards of one posting show the same title, company, and pay. A
+// posting whose card differs from the one it was read under is read again.
+function sameCard(a, b) {
+  const x = cardFields(a), y = cardFields(b);
+  return !x || !y || ['title', 'company', 'salary'].every(k => x[k] === y[k]);
 }
 
 // ── Popup dismissal ───────────────────────────────────────────────────────────
@@ -154,41 +216,17 @@ async function dismissPopups(win) {
   }
 }
 
-// ── Sort dropdown ─────────────────────────────────────────────────────────────
-
-async function sortTopMatched(win) {
-  try {
-    const btnFound = await waitSelector(win, SEL_SORT_BTN, 6000);
-    if (!btnFound) return;
-    await js(win, `document.querySelector(${JSON.stringify(SEL_SORT_BTN)})?.click()`);
-    await sleep(700);
-    const clicked = await js(win, `
-      (function() {
-        const opts = [...document.querySelectorAll(${JSON.stringify(SEL_SORT_OPTS)})];
-        const target = opts.find(o => {
-          const t = o.innerText.trim().toLowerCase();
-          return t.includes('top') || t.includes('match');
-        });
-        if (target) { target.click(); return true; }
-        return false;
-      })()
-    `);
-    if (clicked) await sleep(1800);
-  } catch (err) {
-    console.log(`    Sort error: ${err.message}`);
-  }
-}
-
 // ── Listing collection (scroll loop) ─────────────────────────────────────────
 
 /**
- * Scroll the results panel, harvest job IDs + match scores.
- * Returns { listings, avoided }: listings to open, and cards an Avoid rule
- * already rejects (see avoidOnCard), as records ready for eval.js.
+ * Scroll the results panel, harvest job IDs, match scores, and card text.
+ * Returns the cards at or above the match threshold not seen in this run.
+ * Each card is read once: a card that has been read is marked on the page,
+ * and each pass reads only the unmarked ones.
  */
-async function collectListingUrls(win, minPct, seen, avoid, scrollPauseMs, signal, passControl = null) {
+async function collectListingUrls(win, minPct, seen, scrollPauseMs, signal, passControl = null) {
   const results = [];
-  const avoided = [];
+  const here = new Set();  // the cards this search has loaded, including ones an earlier search found
   let stall = 0;  // consecutive scroll passes that loaded no new cards (end guard)
 
   while (true) {
@@ -196,45 +234,37 @@ async function collectListingUrls(win, minPct, seen, avoid, scrollPauseMs, signa
 
     const cards = await js(win, `
       (function() {
-        const cards = [...document.querySelectorAll(${JSON.stringify(SEL_CARD)})];
-        return cards.map(card => {
+        const cards = [...document.querySelectorAll(${JSON.stringify(SEL_CARD + ':not([data-jobsift-read])')})];
+        const out = [];
+        for (const card of cards) {
           const link = card.querySelector(${JSON.stringify(SEL_LINK)});
           const href = link ? link.getAttribute('href') : '';
           const jid  = href ? href.split('?')[0].split('#')[0].replace(/\\/$/, '').split('/').pop() : '';
+          if (!jid) continue;
+          card.setAttribute('data-jobsift-read', '');
           const scoreEl = card.querySelector(${JSON.stringify(SEL_SCORE)});
           const pctRaw  = scoreEl ? scoreEl.innerText.trim() : '';
           const pct     = /^\\d+$/.test(pctRaw) ? parseInt(pctRaw, 10) : null;
-          const text    = card.innerText.slice(0, 600);
-          return { jid, pct, text };
-        }).filter(c => c.jid);
+          out.push({ jid, pct, text: card.innerText.slice(0, 600) });
+        }
+        return out;
       })()
     `);
 
-    let newSeenThisPass = 0;  // any newly seen card this pass (incl. below threshold)
+    // Any card this search loaded for the first time this pass (including ones
+    // below the threshold or found by an earlier search): what tells the end
+    // of the results from a page still loading.
+    let newSeenThisPass = 0;
     for (const card of cards) {
       const { jid, pct, text } = card;
+      if (!here.has(jid)) { here.add(jid); newSeenThisPass++; }
       if (seen.has(jid)) continue;
       seen.add(jid);
-      newSeenThisPass++;
 
       // Skip listings below the configured match threshold, but keep scanning.
       // We do NOT stop early: every listing at or above min_match_pct in the
       // selected window is collected (filtering happens later in eval).
       if (pct !== null && pct < minPct) continue;
-
-      // The Jobright page stands in for the apply link, so the role has a link
-      // in the results and later runs skip it like any role already shown.
-      const hit = avoid(text);
-      if (hit) {
-        const url = `https://jobright.ai/jobs/info/${jid}`;
-        avoided.push({
-          jid, url, match_pct: pct, card_text: text,
-          company: hit.card.company, title: hit.card.title, location: hit.card.location,
-          work_type: hit.card.work_type || null, salary: hit.card.salary || null,
-          ats_url: url, error: null, avoided: hit.reason,
-        });
-        continue;
-      }
 
       results.push({
         jid,
@@ -285,12 +315,12 @@ async function collectListingUrls(win, minPct, seen, avoid, scrollPauseMs, signa
     // a container height that keeps jittering at the end of a long list).
     stall = newSeenThisPass === 0 ? stall + 1 : 0;
     if ((newH === prevH && newSeenThisPass === 0) || stall >= 4) {
-      console.log(`    End of results - ${results.length} listings collected (>= ${minPct}% match), ${avoided.length} rejected from the card`);
-      return { listings: results, avoided };
+      console.log(`    End of results - ${results.length} cards at or above ${minPct}% match`);
+      return results;
     }
   }
 
-  return { listings: results, avoided };
+  return results;
 }
 
 // ── Detail extraction ─────────────────────────────────────────────────────────
@@ -307,27 +337,26 @@ async function extractDetail(win, item) {
   };
   const record = { ...item, ...empty };
 
-  // Retry so a transient page-load timeout re-attempts the page instead of
-  // dropping the listing (important when evaluating everything down to threshold).
+  // Retry once, after a pause, so a transient page-load timeout or server
+  // error re-attempts the page instead of dropping the listing. A page Jobright
+  // refuses is not retried: it ends the run's requests (StopRun).
   const MAX_ATTEMPTS = 2;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
    try {
-    // loadURL resolves on did-finish-load and rejects on did-fail-load. Crucially
-    // it does NOT reject on an HTTP 4xx/5xx response: a gateway error page loads
-    // "successfully" with the error HTML as its body. Capture the response status
-    // from did-navigate so a 5xx is treated as a failed load and retried/dropped
-    // instead of being parsed as a job titled "502 Bad Gateway".
-    let httpStatus = 0;
-    const onNav = (_e, _url, code) => { if (typeof code === 'number') httpStatus = code; };
-    win.webContents.on('did-navigate', onNav);
-    try {
-      await win.loadURL(item.url);
-    } finally {
-      win.webContents.removeListener('did-navigate', onNav);
+    // An error status is a failed load, never parsed as a job titled
+    // "502 Bad Gateway"; a posting that no longer exists is closed.
+    const httpStatus = await loadPage(win, item.url);
+    if (httpStatus === 404 || httpStatus === 410) {
+      record.is_closed = true;
+      record.error = 'CLOSED';
+      return record;
     }
     if (httpStatus >= 400) throw new Error(`HTTP ${httpStatus}`);
     const h1Found = await waitSelector(win, 'h1', 12000);
-    if (!h1Found) throw new Error('h1 not found');
+    if (!h1Found) {
+      if (atLogin(win)) throw new StopRun('the Jobright session expired - please sign in again');
+      throw new Error('h1 not found');
+    }
     await sleep(300);
 
     const extracted = await js(win, `
@@ -431,8 +460,9 @@ async function extractDetail(win, item) {
     return record;  // success
 
    } catch (err) {
+    if (err instanceof StopRun) throw err;
     record.error = err.message === 'Navigation timeout' ? 'timeout' : err.message;
-    if (attempt < MAX_ATTEMPTS) await sleep(800);
+    if (attempt < MAX_ATTEMPTS) await sleep(RETRY_PAUSE_MS);
    }
   }
 
@@ -441,32 +471,52 @@ async function extractDetail(win, item) {
 
 // ── Worker pool ───────────────────────────────────────────────────────────────
 
+const DETAIL_PAUSE_MS = 1000;
+const RETRY_PAUSE_MS  = 3000;
+// Postings failing to load this many times in a row means Jobright is not
+// answering; the rest are left for a later run.
+const MAX_FAILS_IN_A_ROW = 5;
+
+// A record that failed to enrich: an error with no usable title or body.
+const unusable = r => !!r.error && !r.is_closed && !r.title && !r.body_text && !r.responsibilities;
+
 /**
- * Process detail pages using a pool of N hidden BrowserWindows.
- * N comes from config.settings.detail_workers (default 6).
+ * Process detail pages using a pool of N hidden BrowserWindows, each pausing
+ * DETAIL_PAUSE_MS (plus up to as much again) between pages.
+ * N comes from config.settings.detail_workers, at most MAX_DETAIL_WORKERS.
+ * Returns { read, closed }: the postings read, and a short record for each
+ * found closed. onRead is given each of both as it is read. Sets halt.reason
+ * and stops when Jobright refuses a page, the session ends, or postings stop
+ * loading.
  */
-async function fetchDetailsPool(listings, nWorkers, signal, onTick, passControl = null) {
-  const workers = Array.from({ length: nWorkers }, makeHiddenWindow);
+async function fetchDetailsPool(listings, nWorkers, { signal, passControl, halt, onRead }, onTick) {
+  const workers = Array.from({ length: Math.min(nWorkers, listings.length) }, makeHiddenWindow);
   const results = new Array(listings.length);
   let nextIdx = 0;
-  let closed = 0, done = 0;
+  let done = 0, failsInARow = 0;
 
   async function workerLoop(win) {
     try {
       while (true) {
-        if (signal?.aborted || passControl?.abort) break;
+        if (signal?.aborted || passControl?.abort || halt.reason) break;
         const idx = nextIdx++;
         if (idx >= listings.length) break;
+        if (idx >= nWorkers) await sleep(DETAIL_PAUSE_MS * (1 + Math.random()));
         try {
-          const detail = await extractDetail(win, listings[idx]);
+          const full = await extractDetail(win, listings[idx]);
+          const detail = full.is_closed ? { jid: full.jid, url: full.url, is_closed: true, error: 'CLOSED' } : full;
           detail.search_pass = listings[idx].search_pass;
           results[idx] = detail;
           done++;
           if (onTick) onTick(done, listings.length, detail);
-          if (detail.is_closed) closed++;
+          runlog.log(`    posting ${detail.jid}: ${detail.is_closed ? 'closed' : unusable(detail) ? `failed (${detail.error})` : detail.error ? `read, with ${detail.error}` : 'read'}`);
+          failsInARow = unusable(detail) ? failsInARow + 1 : 0;
+          if (failsInARow >= MAX_FAILS_IN_A_ROW) halt.reason = 'Jobright postings stopped loading';
+          if (!unusable(detail) && onRead) onRead(detail);
         } catch (err) {
+          if (err instanceof StopRun) { halt.reason = err.message; break; }
           // Record as error rather than crashing the whole pool
-          console.error(`    Worker error on ${listings[nextIdx - 1]?.jid}: ${err.message}`);
+          console.error(`    Worker error on ${listings[idx].jid}: ${err.message}`);
           done++;
         }
       }
@@ -477,20 +527,28 @@ async function fetchDetailsPool(listings, nWorkers, signal, onTick, passControl 
   }
 
   await Promise.all(workers.map(workerLoop));
-  if (closed) console.log(`\n    ${closed} closed listing(s) skipped`);
-  // Drop closed listings and any record that failed to enrich (error set with no
-  // usable title or body). This prevents error-page artifacts and empty-content
-  // shells from flowing into the merge/eval as phantom roles.
-  const usable = results.filter(r =>
-    r && !r.is_closed && !(r.error && !r.title && !r.body_text && !r.responsibilities));
-  const dropped = results.filter(r => r && !r.is_closed).length - usable.length;
+  const got = results.filter(Boolean);
+  const closed = got.filter(r => r.is_closed);
+  if (closed.length) console.log(`\n    ${closed.length} closed listing(s) skipped`);
+  // Leave out any record that failed to enrich. This prevents error-page
+  // artifacts and empty-content shells from flowing into the merge/eval as
+  // phantom roles.
+  const read = got.filter(r => !r.is_closed && !unusable(r));
+  const dropped = got.length - closed.length - read.length;
   if (dropped) console.log(`\n    ${dropped} listing(s) dropped (failed to load/enrich)`);
-  return usable;
+  return { read, closed };
 }
 
 // ── One search pass ───────────────────────────────────────────────────────────
 
-async function runSearch(searchCfg, minPct, scrollPauseMs, nWorkers, avoid, seen, signal, onProgress, passControl = null) {
+/**
+ * Runs one search and returns its records: the postings read, those reused
+ * from an earlier run, the cards rejected without being opened, and a short
+ * record for each closed posting. ctx is the run's shared state (see run).
+ * onProgress(text, share) is given what the pass is doing and how far it is.
+ */
+async function runSearch(searchCfg, ctx, onProgress) {
+  const { cfg, known, closed, shown, minPct, scrollPause, nWorkers, seen, signal, passControl } = ctx;
   console.log(`\n  ${'='.repeat(56)}`);
   console.log(`  Pass: ${searchCfg.label}`);
   console.log(`  URL:  ${searchCfg.url}`);
@@ -499,89 +557,135 @@ async function runSearch(searchCfg, minPct, scrollPauseMs, nWorkers, avoid, seen
   const win = makeHiddenWindow();
 
   try {
-    // loadURL already resolves once the page has finished loading.
-    await win.loadURL(searchCfg.url);
+    const status = await loadPage(win, searchCfg.url);
+    if (status >= 400) throw new Error(`HTTP ${status}`);
     await sleep(2500);
 
-    // Login guard
-    const curUrl = win.webContents.getURL();
-    if (curUrl.toLowerCase().includes('login')) {
-      win.destroy();
-      throw new Error('Jobright session expired during search - please log in again.');
-    }
+    // The sign-in page can also take over after the search page has loaded.
+    if (atLogin(win)) throw new StopRun('the Jobright session expired - please sign in again');
 
     await dismissPopups(win);
-    await sortTopMatched(win);
 
     console.log(`    Collecting listings >= ${minPct}% match...`);
-    const { listings, avoided } = await collectListingUrls(win, minPct, seen, avoid, scrollPauseMs, signal, passControl);
+    onProgress('collecting listings', 0);
+    const found = await collectListingUrls(win, minPct, seen, scrollPause, signal, passControl);
     win.destroy();
+    // A range Jobright does not offer is searched with a longer one; cards
+    // posted before the run's own range are left out.
+    const inRange = found.filter(c => !(evalEngine.daysFromCard(c.card_text.split('\n')[0]) > searchCfg.maxDays));
+    if (inRange.length < found.length) console.log(`    ${found.length - inRange.length} cards posted more than ${searchCfg.maxDays} days ago left out`);
+    // Roles an earlier run already showed are not looked at again.
+    const cards = inRange.filter(c => !shown.has(c.jid));
+    if (cards.length < inRange.length) console.log(`    ${inRange.length - cards.length} cards already shown by an earlier run left out`);
 
     // If the pass was skipped during collection, roll over with nothing.
     if (signal?.aborted || passControl?.abort) return [];
 
-    // Tag each listing with the current search pass
-    for (const l of [...listings, ...avoided]) l.search_pass = searchCfg.id;
-    if (!listings.length) return avoided;
+    // Judge each card first, then set aside the postings an earlier run found
+    // closed and reuse those it read; only the rest are opened.
+    const avoided = await screenCards(cards, cfg);
+    const rejected = new Set(avoided.map(r => r.jid));
+    const reused = [], gone = [], listings = [];
+    for (const c of cards) {
+      if (rejected.has(c.jid)) continue;
+      const prior = known.get(c.jid);
+      if (closed.has(c.jid)) gone.push({ jid: c.jid, url: c.url, is_closed: true, error: 'CLOSED' });
+      else if (prior && sameCard(prior.card_text, c.card_text)) reused.push({ ...prior, match_pct: c.match_pct, card_text: c.card_text });
+      else listings.push(c);
+    }
+    for (const l of [...listings, ...reused, ...avoided, ...gone]) l.search_pass = searchCfg.id;
+    const summary = `${cards.length} cards - ${avoided.length} rejected from the card, ${reused.length} read in an earlier run, ` +
+                    `${gone.length} closed, ${listings.length} to open`;
+    console.log(`    ${summary}`);
+    onProgress(summary, listings.length ? 0 : 1);
+    if (!listings.length) return [...reused, ...avoided, ...gone];
 
-    console.log(`    ${listings.length} listings -> extracting details (${nWorkers} workers)...`);
-    const results = await fetchDetailsPool(listings, nWorkers, signal, (done, tot, detail) => {
+    console.log(`    Opening ${listings.length} postings, ${nWorkers} at a time...`);
+    const opened = await fetchDetailsPool(listings, nWorkers, ctx, (done, tot, detail) => {
       process.stdout.write(`\r    [${String(done).padStart(3)}/${tot}] ${detail.jid}  `);
-      if (onProgress) onProgress(`Pass ${searchCfg.label}: ${done}/${tot}`, done / tot);
-    }, passControl);
-    console.log(`\n    ${results.length} records extracted`);
-    return [...results, ...avoided];
-  } catch (err) {
+      onProgress(`opening postings, ${done}/${tot}`, done / tot);
+    });
+    console.log(`\n    ${opened.read.length} records extracted`);
+    onProgress(`${summary.replace(/ to open$/, ' opened')}${opened.closed.length ? `, ${opened.closed.length} of them closed` : ''}`, 1);
+    return [...opened.read, ...reused, ...avoided, ...gone, ...opened.closed];
+  } finally {
     if (!win.isDestroyed()) win.destroy();
-    throw err;
   }
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
 /**
- * run({ cfg, daysAgo, signal, onProgress }) -> Array of job records
- *   onProgress(message, share)  share is how far the run is, 0 to 1
+ * run({ cfg, daysAgo, known, closed, shown, signal, onProgress, onRead })
+ *   -> { records, complete }
+ *   known                       postings read in earlier runs, by jid; not opened again
+ *   closed                      jids of postings earlier runs found closed; not opened again
+ *   shown                       jids of roles earlier runs already showed; left out
+ *   onProgress(message, share, line)  share is how far the run is, 0 to 1;
+ *                               messages with the same line replace one another
+ *                               in the activity feed, so each pass shows as one line
+ *   onRead(record)              called with each posting as it is read
+ *   records    the job records, with a short record ({ jid, is_closed: true })
+ *              for each closed posting, which is kept on file but is not a role
+ *   complete   whether every search ran to its end, so the whole period was covered
  */
-async function run({ cfg, daysAgo = 7, signal, onProgress, passControl = null }) {
-  const emit = (msg, pct) => { if (onProgress) onProgress(msg, pct); };
+async function run({ cfg, daysAgo = 7, known = new Map(), closed = new Set(), shown = new Set(), signal, onProgress, onRead = null, passControl = null }) {
+  const emit = (msg, pct, line) => { if (onProgress) onProgress(msg, pct, line); };
 
   const settings      = cfg.settings       || {};
   const minPct        = settings.min_match_pct  ?? 60;
   const scrollPause   = settings.scroll_pause_ms ?? 1800;
-  const nWorkers      = Math.max(1, settings.detail_workers ?? 6);
-  const avoid         = avoidOnCard(cfg);
+  const nWorkers      = Math.min(MAX_DETAIL_WORKERS, Math.max(1, settings.detail_workers ?? MAX_DETAIL_WORKERS));
 
   const searches = buildSearches(cfg, daysAgo);
+  if (!searches.length) {
+    console.log(cfg.jobright?.search_titles?.length
+      ? '\nJobright Scraper - no searches: no track accepts remote work or has a location'
+      : '\nJobright Scraper - no searches: add search titles for Jobright on the Sources tab');
+    return { records: [], complete: false };
+  }
   console.log(`\nJobright Scraper - ${searches.length} pass(es): ${searches.map(s => s.id).join(', ')}`);
 
-  const seen = new Set();
+  const halt = { reason: null };  // set when nothing more is to be requested from Jobright
+  const ctx = { cfg, known, closed, shown, minPct, scrollPause, nWorkers, seen: new Set(), signal, passControl, halt, onRead };
   const allResults = [];
+  let complete = true;
   let passIdx = 0;
 
   for (const search of searches) {
     if (signal?.aborted) break;
     if (passControl) passControl.abort = false;  // reset the per-pass skip flag
-    emit(`Running pass: ${search.label}`, passIdx / searches.length);
+    // Everything a pass reports is one line of the activity feed.
+    const say = (text, share) => emit(`Pass ${search.label}: ${text}`, (passIdx + share) / searches.length, `pass:${search.id}`);
+    say('loading the search', 0);
     // Isolate each pass: a failure (e.g. a search-page load timeout) on one
     // pass should not lose the listings already gathered by other passes.
     try {
-      const results = await runSearch(
-        search, minPct, scrollPause, nWorkers, avoid,
-        seen, signal,
-        (msg, pct) => emit(msg, (passIdx + pct) / searches.length),
-        passControl,
-      );
+      const results = await runSearch(search, ctx, say);
       allResults.push(...results);
-      if (passControl?.abort) emit(`Pass "${search.label}" skipped by user; continuing`, (passIdx + 1) / searches.length);
+      if (passControl?.abort) {
+        complete = false;
+        say('skipped by user; continuing', 1);
+      }
     } catch (err) {
-      console.error(`  Pass "${search.label}" failed: ${err.message}`);
-      emit(`Pass "${search.label}" failed (${err.message}); continuing`, (passIdx + 1) / searches.length);
+      complete = false;
+      if (err instanceof StopRun) halt.reason = err.message;
+      else {
+        console.error(`  Pass "${search.label}" failed: ${err.message}`);
+        say(`failed (${err.message}); continuing`, 1);
+      }
+    }
+    if (halt.reason) {
+      complete = false;
+      console.error(`  Jobright stopped: ${halt.reason}`);
+      emit(`Jobright stopped: ${halt.reason}. What is left is picked up by the next run.`, (passIdx + 1) / searches.length);
+      break;
     }
     passIdx++;
   }
+  if (signal?.aborted) complete = false;
 
-  // Dedup across passes by jid (seen set already handles this but be safe)
+  // A posting found by more than one search is kept once.
   const seenJids = new Set();
   const deduped  = [];
   for (const r of allResults) {
@@ -589,7 +693,7 @@ async function run({ cfg, daysAgo = 7, signal, onProgress, passControl = null })
   }
 
   console.log(`\n  Jobright done - ${deduped.length} records`);
-  return deduped;
+  return { records: deduped, complete };
 }
 
 module.exports = { run };

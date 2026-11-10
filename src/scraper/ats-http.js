@@ -10,9 +10,10 @@
  * Output format is identical to jobright.js so eval.js merges them cleanly.
  */
 
-const { criteriaFromConfig, jobrightPlan, COUNTRY } = require('../criteria');
+const { criteriaFromConfig, searchPlan, COUNTRY } = require('../criteria');
 const { companyKey, companyWords } = require('../connections');
 const boards = require('../boards');
+const runlog = require('../runlog');
 const { placeChecker, stateNameOf, namesOnlyAState } = require('../eval');
 
 const USER_AGENT =
@@ -81,6 +82,10 @@ function withCause(err) {
   return err;
 }
 
+// This run's requests to the job boards, by site and status, for the run log,
+// where each request that was refused or failed also gets its own line.
+let requests = runlog.tally();
+
 async function fetchRetry(url, opts = {}, retries = 3, abortSignal = null) {
   const backoffs = [500, 1000, 2000];
   const retryOn  = new Set([429, 500, 502, 503, 504]);
@@ -103,6 +108,8 @@ async function fetchRetry(url, opts = {}, retries = 3, abortSignal = null) {
         headers: opts.headers || { 'User-Agent': USER_AGENT },
         signal,
       });
+      requests.count(url, r.status);
+      if (r.status >= 400) runlog.log(`  ${opts.method || 'GET'} ${url} -> HTTP ${r.status}`);
       if (retryOn.has(r.status)) {
         if (r.status === 429) slowHost(host);
         if (i < retries) {
@@ -121,6 +128,10 @@ async function fetchRetry(url, opts = {}, retries = 3, abortSignal = null) {
       }
       return r;
     } catch (err) {
+      if (!err.status && !abortSignal?.aborted) {
+        requests.count(url, 'failed');
+        runlog.log(`  ${opts.method || 'GET'} ${url} -> failed: ${whyFailed(err)}`);
+      }
       // Don't retry if the user explicitly canceled
       if (abortSignal?.aborted || i === retries) throw withCause(err);
       await sleep(backoffs[i] || 2000, abortSignal);
@@ -244,11 +255,15 @@ function ghSalary(metaList, contentText) {
 
 // ── Work-type normalizer ──────────────────────────────────────────────────────
 
-const COUNTRY_REGION_RE = /^(?:united\s+states|us|usa|canada|uk|united\s+kingdom|australia|india|europe|eu|worldwide|global|international|north\s+america)\s*$/i;
+const COUNTRY_REGION_RE = /^(?:united\s+states(?:\s+of\s+america)?|u\.?s\.?a?\.?|canada|uk|united\s+kingdom|australia|india|europe|eu|worldwide|global|international|north\s+america)\s*$/i;
 
+// The arrangement a location implies: 'Hybrid' or 'Remote' when it says so,
+// 'Onsite' for a place to work at, and '' for a country or region alone,
+// which names no site and so says nothing about the arrangement.
 function normalizeWorkType(loc, extra = '') {
   const combined = (loc + ' ' + extra).toLowerCase();
   if (combined.includes('hybrid')) return 'Hybrid';
+  if (!combined.includes('remote') && COUNTRY_REGION_RE.test(String(loc).trim())) return '';
   if (combined.includes('remote')) {
     const parts = combined.split(',').map(p => p.replace(/^us-/, '').trim());
     if (parts.length > 1) {
@@ -390,6 +405,20 @@ function noteFailure(source, company, reason, partly = false) {
   console.log(`  [${source}] ${company}: ${reason}`);
 }
 
+// ── Postings read in earlier runs ─────────────────────────────────────────────
+// On boards whose list has no text, each matching posting's text is one more
+// request. A posting whose text an earlier run downloaded (run's known, by
+// jid) is not requested again while its title is the same and, where the
+// board's list says when a posting last changed, that is the same too.
+let earlier = new Map();
+let reusedCount = 0;
+function readBefore(jid, title, company, stamp = null) {
+  const r = earlier.get(jid);
+  if (!r || r.title !== title || (stamp !== null && r.list_stamp !== stamp)) return null;
+  reusedCount++;
+  return { ...r, company, card_text: `Direct ATS - ${company}` };
+}
+
 // Each scraper calls report('ok') when the board answered and report('stale')
 // when it does not exist (404 or similar), so the known-boards file can keep
 // each board's status. A network error reports nothing.
@@ -414,6 +443,10 @@ async function scrapeGreenhouse(company, board, titleMatches, signal = null, rep
     if (signal?.aborted) break;
     const title = job.title || '';
     if (!titleMatches(title)) continue;
+
+    const stamp  = job.updated_at || '';
+    const before = readBefore(`ats_gh_${job.id}`, title, company, stamp);
+    if (before) { matches.push(before); continue; }
 
     // The list has titles only; each match's text, pay, and offices are one
     // more request. A failed one keeps the role without them.
@@ -441,6 +474,7 @@ async function scrapeGreenhouse(company, board, titleMatches, signal = null, rep
 
     matches.push({
       jid:              `ats_gh_${job.id}`,
+      list_stamp:       stamp,
       url:              jobUrl,
       match_pct:        100,
       card_text:        `Direct ATS - ${company}`,
@@ -661,6 +695,8 @@ async function scrapeAshby(company, slug, titleMatches, signal = null, report = 
     const locName   = posting.locationName || '';
     const workplace = (posting.workplaceType || '').toUpperCase();
     const jobUrl    = `https://jobs.ashbyhq.com/${slug}/${jobId}`;
+    const before    = jobId && readBefore(`ats_as_${jobId}`, title, company);
+    if (before) { matches.push(before); continue; }
 
     let descText = '';
     if (jobId) {
@@ -894,6 +930,12 @@ async function scrapeWorkday(company, baseUrl, tenant, site, searchTerms, titleM
     const extPath = job.externalPath || '';
     const jobId   = wdJobId(extPath);
     const jobUrl  = extPath ? `${baseUrl}/en-US/${wdSitePath(baseUrl, tenant, site)}${extPath}` : '';
+    // Prefer the requisition id so the same job dedups across runs too; then the
+    // posting id.
+    const reqid    = wdReqId(job);
+    const fixedJid = reqid ? `ats_wd_${tenant}_${reqid}` : jobId ? `ats_wd_${tenant}_${jobId}` : '';
+    const before   = fixedJid && readBefore(fixedJid, title, company);
+    if (before) { results.push(before); methodCounts['an earlier run'] = (methodCounts['an earlier run'] || 0) + 1; continue; }
     let detail = {};
     if (extPath) {
       detail = await fetchWdDescription(baseUrl, tenant, site, extPath, signal);
@@ -913,14 +955,8 @@ async function scrapeWorkday(company, baseUrl, tenant, site, searchTerms, titleM
     const [resp_, req_, pref_] = splitDescription(fullText);
     const salary = extractSalary(fullText);
 
-    // Prefer the requisition id so the same job dedups across runs too; then the
-    // posting id; then a title+location hash as a last resort.
-    const reqid = wdReqId(job);
-    const jid = reqid
-      ? `ats_wd_${tenant}_${reqid}`
-      : jobId
-        ? `ats_wd_${tenant}_${jobId}`
-        : `ats_wd_${tenant}_${Math.abs(hashCode(title + locName))}`;
+    // A posting with neither id gets a title+location hash as a last resort.
+    const jid = fixedJid || `ats_wd_${tenant}_${Math.abs(hashCode(title + locName))}`;
 
     results.push({
       jid,
@@ -1126,7 +1162,11 @@ async function scrapeRippling(company, { slug }, { titleMatches, signal, report 
   catch (err) { boardError('RP', label, err, report); return []; }
   report('ok');
   list = Array.isArray(list) ? list : [];
-  const wanted = list.filter(j => titleMatches(j.name || ''));
+  const reused = [], wanted = [];
+  for (const j of list.filter(j => titleMatches(j.name || ''))) {
+    const before = readBefore(`ats_rp_${j.uuid}`, j.name || '', company);
+    if (before) reused.push(before); else wanted.push(j);
+  }
   const detailed = await withDetails(wanted, j => getJson(`${api}/${encodeURIComponent(j.uuid)}`, signal), signal);
   const matches = detailed.map(([j, d]) => {
     const desc = d?.description || {};
@@ -1140,7 +1180,7 @@ async function scrapeRippling(company, { slug }, { titleMatches, signal, report 
       url: j.url || `https://ats.rippling.com/${slug}/jobs/${j.uuid}`,
       employmentType: typeof d?.employmentType === 'string' ? d.employmentType : d?.employmentType?.label || '',
     });
-  });
+  }).concat(reused);
   console.log(`  [RP] ${label}: ${list.length} postings -> ${matches.length} matches`);
   return matches;
 }
@@ -1250,7 +1290,7 @@ function efRemoteFacets(facets) {
 }
 
 // The searches of an Eightfold board, from your tracks (criteria
-// jobrightPlan): one around each track's location, in kilometers (the unit
+// searchPlan): one around each track's location, in kilometers (the unit
 // Eightfold uses) with a tenth more so its distances cannot fall short of
 // JobSift's, and one across that location's state, which keeps only postings
 // that name the state alone and is dropped for a board where the first title
@@ -1357,14 +1397,24 @@ async function scrapeEightfold(company, { base_url, domain }, { terms, titleMatc
   const detail = p => (newer
     ? getJson(`${base_url}/api/pcsx/position_details?position_id=${encodeURIComponent(p.id)}&domain=${d}&hl=en`, signal).then(r => r.data || {})
     : getJson(`${base_url}/api/apply/v2/jobs/${p.id}?domain=${d}`, signal));
+  // A posting read in an earlier run is used again when it is remote by the
+  // site's filter now exactly as it was then.
+  const before = new Map();
+  for (const [p, why] of decided) {
+    const jid = `ats_ef_${p.id}`;
+    if (why || (earlier.get(jid)?.work_type === 'Remote') !== remoteIds.has(p.id)) continue;
+    const b = readBefore(jid, titleOf(p), company);
+    if (b) before.set(p, b);
+  }
   // The older search sends each posting's text with the list.
-  const toRead = decided.filter(([p, why]) => !why && !p.job_description).map(([p]) => p);
+  const toRead = decided.filter(([p, why]) => !why && !p.job_description && !before.has(p)).map(([p]) => p);
   const full = new Map(await withDetails(toRead, detail, signal));
   const matches = decided.map(([p, why]) => {
+    if (before.has(p)) return before.get(p);
     const f = full.get(p) || null;
     const { location, work_type } = placeOf(p, f);
     return atsRecord({
-      jid: `ats_ef_${p.id}`, company, title: p.name || p.posting_name || '', location, workType: work_type,
+      jid: `ats_ef_${p.id}`, company, title: titleOf(p), location, workType: work_type,
       text: stripHtml(f?.job_description || f?.jobDescription || p.job_description || ''),
       url: p.canonicalPositionUrl || f?.publicUrl || p.publicUrl ||
            (p.positionUrl ? `${base_url}${p.positionUrl}` : `${base_url}/careers/job/${p.id}`),
@@ -1407,12 +1457,18 @@ async function scrapeOracle(company, { base_url, site }, { terms, titleMatches, 
     work_type: workTypeWord(r.WorkplaceType || r.WorkplaceTypeCode),
   });
   const decided = await byPlace(found, placeOf, placeCheck);
-  const full = new Map(await withDetails(decided.filter(([, why]) => !why).map(([r]) => r), async r => {
+  const before = new Map();
+  for (const [r, why] of decided) {
+    const b = !why && readBefore(`ats_or_${host}_${r.Id}`, r.Title || '', company);
+    if (b) before.set(r, b);
+  }
+  const full = new Map(await withDetails(decided.filter(([r, why]) => !why && !before.has(r)).map(([r]) => r), async r => {
     const finder = oracleFinder([`ById;Id="${r.Id}"`, `siteNumber=${site}`]);
     const data = await getJson(`${api}/recruitingCEJobRequisitionDetails?expand=all&onlyData=true&finder=${finder}`, signal);
     return (data.items || [])[0] || null;
   }, signal));
   const matches = decided.map(([r, why]) => {
+    if (before.has(r)) return before.get(r);
     const f = full.get(r) || null;
     const text = f
       ? stripHtml([f.ExternalDescriptionStr, f.ExternalResponsibilitiesStr, f.ExternalQualificationsStr].filter(Boolean).join('\n'))
@@ -1486,8 +1542,10 @@ function sharedRoles(results, target, kb) {
 // ── Main export ───────────────────────────────────────────────────────────────
 
 /**
- * run({ cfg, kb, connectionCompanies, signal, onProgress, onChecked }) -> Array of job records
+ * run({ cfg, kb, known, connectionCompanies, signal, onProgress, onChecked }) -> Array of job records
  *   cfg                  the parsed config.json object
+ *   known                postings whose text earlier runs downloaded, by jid
+ *                        (history.boards); not downloaded again
  *   kb                   the known boards (boards.KnownBoards); updated with
  *                        each board's status, saved by the caller
  *   connectionCompanies  the connections' companies, most connections first
@@ -1498,8 +1556,11 @@ function sharedRoles(results, target, kb) {
  *                        up the connections' companies' boards fills the first
  *                        half when any are looked up, searching the boards the rest
  */
-async function run({ cfg, kb, connectionCompanies = [], signal, onProgress, onChecked }) {
+async function run({ cfg, kb, known = new Map(), connectionCompanies = [], signal, onProgress, onChecked }) {
   const emit = (msg, pct) => { if (onProgress) onProgress(msg, pct); };
+  earlier = known;
+  reusedCount = 0;
+  requests = runlog.tally();
   boardFailures.length = 0;
   hostGap.clear(); hostNext.clear();
 
@@ -1508,9 +1569,9 @@ async function run({ cfg, kb, connectionCompanies = [], signal, onProgress, onCh
   const conn          = cfg.connections || {};
   const recheckDays   = Math.max(1, Number(conn.recheck_days ?? boards.DEFAULT_RECHECK_DAYS) || boards.DEFAULT_RECHECK_DAYS);
   const crit          = criteriaFromConfig(cfg);
-  // Workday, Eightfold, and Oracle boards are searched by keyword: the same
-  // titles Jobright is searched for.
-  const plan          = jobrightPlan(cfg);
+  // Workday, Eightfold, and Oracle boards are searched by keyword: the fewest
+  // titles that cover the roles marked for searching.
+  const plan          = searchPlan(cfg);
   const WD_TERMS      = plan.titles;
   const titleMatches  = buildTitleFilter(
     crit.roles,
@@ -1640,7 +1701,11 @@ async function run({ cfg, kb, connectionCompanies = [], signal, onProgress, onCh
     if (!seenUrls.has(key)) { seenUrls.add(key); deduped.push(r); }
   }
 
-  console.log(`\n  ATS done - ${deduped.length} unique roles from ${targets.length} companies`);
+  console.log(`\n  ATS done - ${deduped.length} unique roles from ${targets.length} companies` +
+              (reusedCount ? `; ${reusedCount} already read in an earlier run, not downloaded again` : ''));
+
+  runlog.log(`ATS requests: ${requests.total()}`);
+  for (const line of requests.lines()) runlog.log(`  ${line}`);
 
   // Surface unreachable boards in the run feed. Without this a dead board slug
   // is silently worth zero roles and reads as a quiet market.

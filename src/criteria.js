@@ -25,9 +25,9 @@
  * accepts A only, A and B, or A to C. A posting older than the
  * settings.stale_after_days limit is shown one grade lower (never below C).
  *
- * Config layout (config_version 5):
+ * Config layout (config_version 6):
  *   roles:      [{ title, priority: 'ideal' | 'good' | 'acceptable', search, tracks, type }]
- *                 search  whether Jobright and company boards are searched for it
+ *                 search  whether company boards searched by title are searched for it
  *                 tracks  the keys of the tracks that accept it; absent = every track
  *                 type    the dashboard tab its jobs are shown under; absent = "Other"
  *   industries: [{ name, strength: 'strong' | 'some' }]
@@ -37,6 +37,10 @@
  *   tracks[]:   employment_types [] (empty = every type; "Not stated" always passes)
  *   tracks[]:   blocked_industries [] (on top of rejection_filters.blocked_industries)
  *   settings:   stale_after_days (blank = never lower a grade)
+ *   settings:   detail_workers, Jobright postings opened at once (1 to MAX_DETAIL_WORKERS)
+ *   jobright:   search_titles [] (the titles Jobright is searched for),
+ *               experience_levels [] (EXPERIENCE_LEVELS searched on Jobright;
+ *               empty = every level)
  *   sources:    see sources.js; company_lists.staffing_firms
  *   connections: search_companies, recheck_days (see boards.js)
  *
@@ -45,7 +49,10 @@
 
 const { DEFAULT_SOURCES, EMPLOYMENT_TYPES, NOT_STATED, POSTED_BY } = require('./sources');
 
-const CONFIG_VERSION = 5;
+const CONFIG_VERSION = 6;
+const MAX_DETAIL_WORKERS = 2;
+// Jobright's experience levels, in its own order.
+const EXPERIENCE_LEVELS = ['Intern/New Grad', 'Entry Level', 'Mid Level', 'Senior Level', 'Lead/Staff', 'Director/Executive'];
 
 const PRIORITY_POINTS = { ideal: 40, good: 30, acceptable: 20 };
 const STRENGTH_POINTS = { strong: 20, some: 10 };
@@ -151,6 +158,7 @@ function migrateConfig(input) {
   if (from < 3) toVersion3(cfg, notes);
   if (from < 4) toVersion4(cfg, notes);
   if (from < 5) toVersion5(cfg, notes);
+  if (from < 6) toVersion6(cfg, notes);
   for (const [k, f] of UNUSED) if (hasSetting(cfg, k, f)) delete cfg[k][f];
   cfg.config_version = CONFIG_VERSION;
   if (notes.length) cfg.migration_notes = [...(cfg.migration_notes || []), ...notes];
@@ -159,7 +167,7 @@ function migrateConfig(input) {
 
 // Settings no part of JobSift reads, as [section, key]. They are removed from
 // the file when it is loaded.
-const UNUSED = [['connections', 'lookups_per_run']];
+const UNUSED = [['connections', 'lookups_per_run'], ['jobright', 'filters_url']];
 const hasSetting = (cfg, k, f) => !!cfg?.[k] && typeof cfg[k] === 'object' && Object.hasOwn(cfg[k], f);
 
 // Version 2: roles, industries and skills replace the score lists; tracks get
@@ -350,6 +358,26 @@ function toVersion5(cfg, notes) {
   if (cfg.ats_boards) delete cfg.ats_boards.workday_search_terms;
 }
 
+// Version 6: Jobright is searched for its own list of titles, set here from
+// the searched roles, and opens at most MAX_DETAIL_WORKERS postings at once.
+function toVersion6(cfg, notes) {
+  if (!Array.isArray(cfg.jobright?.search_titles)) {
+    const titles = deriveSearchTitles(cfg.roles);
+    cfg.jobright = { experience_levels: [], ...(cfg.jobright || {}), search_titles: titles };
+    if (cfg.setup_complete === true && titles.length) {
+      notes.push(`Jobright is now searched only for the titles on the Sources tab, set from your searched roles: ${preview(titles)}. ` +
+        'Each title is one Jobright search per run, so keep only the ones you need.');
+    }
+  }
+  const workers = Number(cfg.settings?.detail_workers);
+  if (Number.isFinite(workers) && workers > MAX_DETAIL_WORKERS) {
+    cfg.settings.detail_workers = MAX_DETAIL_WORKERS;
+    if (cfg.setup_complete === true) {
+      notes.push(`Jobright postings are now opened at most ${MAX_DETAIL_WORKERS} at a time (yours was ${workers}).`);
+    }
+  }
+}
+
 // ── Reading the config ──────────────────────────────────────────────────────
 
 /**
@@ -391,18 +419,41 @@ function deriveSearchTitles(roles) {
   return titles.filter(t => !titles.some(o => o !== t && o.length < t.length && wordRe(o).test(t)));
 }
 
+// The industries every track rejects: the blocked industries, and those each
+// track blocks too. Commas are dropped, since Jobright separates names by them.
+function blockedEverywhere(cfg) {
+  const key = s => norm(s).toLowerCase();
+  const lists = (cfg.tracks || []).map(t => new Set((t.blocked_industries || []).map(key)));
+  const names = [...(cfg.rejection_filters?.blocked_industries || []),
+    ...((cfg.tracks || [])[0]?.blocked_industries || []).filter(n => lists.every(l => l.has(key(n))))];
+  const seen = new Set();
+  const out = names.map(n => norm(String(n).replace(/[,\s]+/g, ' ')))
+    .filter(n => n && !seen.has(n.toLowerCase()) && seen.add(n.toLowerCase()));
+  return out.length ? out : null;
+}
+
 /**
- * What Jobright and Workday boards are searched for, and where Jobright is
- * searched:
- *   titles   deriveSearchTitles() of the roles
- *   remote   whether any track accepts remote work
- *   areas    each location set on an onsite or hybrid track, with the
- *            widest commute radius set there: [{ location, radius }]
+ * What each run searches for, and where:
+ *   titles    deriveSearchTitles() of the roles: what the company boards
+ *             searched by title (Workday, Eightfold, Oracle) are searched for
+ *   jobright  the titles Jobright is searched for (jobright.search_titles)
+ *   remote    whether any track accepts remote work
+ *   areas     each location set on an onsite or hybrid track, with the
+ *             widest commute radius set there and the arrangements accepted
+ *             there: [{ location, radius, workTypes }]
+ *   jobrightFilters  what Jobright can leave out for every track, each null
+ *             or false when nothing is left out:
+ *               employmentTypes   the types any track accepts
+ *               experienceLevels  jobright.experience_levels
+ *               noClearance       every track rejects roles needing a clearance
+ *               blockedIndustries the blocked industries, and those every
+ *                                 track blocks, passed as Jobright industry names
  *   fruitless the searched roles no track can keep a job for (fruitlessRoles)
- * Every title is searched once per place.
  */
-function jobrightPlan(cfg) {
+function searchPlan(cfg) {
   const titles = deriveSearchTitles(cfg.roles);
+  const jobright = [...new Map((Array.isArray(cfg.jobright?.search_titles) ? cfg.jobright.search_titles : [])
+    .map(norm).filter(Boolean).map(t => [t.toLowerCase(), t])).values()];
   const fruitless = fruitlessRoles(cfg);
   const tracks = cfg.tracks || [];
   const remote = tracks.some(t => (t.work_types || []).includes('Remote'));
@@ -410,13 +461,25 @@ function jobrightPlan(cfg) {
   // track's own radius is applied when the results are scored.
   const byPlace = new Map();
   for (const t of tracks) {
-    if (!norm(t.target_location) || !(t.work_types || []).some(w => w === 'Onsite' || w === 'Hybrid')) continue;
+    const inPerson = (t.work_types || []).filter(w => w === 'Onsite' || w === 'Hybrid');
+    if (!norm(t.target_location) || !inPerson.length) continue;
     const key = norm(t.target_location).toLowerCase();
     const cur = byPlace.get(key);
-    if (!cur) byPlace.set(key, { location: norm(t.target_location), radius: radiusFor(t) });
-    else cur.radius = Math.max(cur.radius, radiusFor(t));
+    if (!cur) byPlace.set(key, { location: norm(t.target_location), radius: radiusFor(t), workTypes: inPerson });
+    else {
+      cur.radius = Math.max(cur.radius, radiusFor(t));
+      cur.workTypes = [...new Set([...cur.workTypes, ...inPerson])];
+    }
   }
-  return { titles, remote, areas: [...byPlace.values()], fruitless };
+  const typeLists = tracks.map(t => (Array.isArray(t.employment_types) ? t.employment_types : []));
+  const levels = EXPERIENCE_LEVELS.filter(l => (cfg.jobright?.experience_levels || []).includes(l));
+  const jobrightFilters = {
+    employmentTypes:  typeLists.length && typeLists.every(l => l.length) ? EMPLOYMENT_TYPES.filter(e => typeLists.some(l => l.includes(e))) : null,
+    experienceLevels: levels.length && levels.length < EXPERIENCE_LEVELS.length ? levels : null,
+    noClearance:      tracks.length > 0 && tracks.every(t => t.clearance_behavior === 'reject'),
+    blockedIndustries: blockedEverywhere(cfg),
+  };
+  return { titles, jobright, remote, areas: [...byPlace.values()], jobrightFilters, fruitless };
 }
 
 /**
@@ -571,7 +634,8 @@ const RULES = {
   skillPoints: SKILL_POINTS, max: MAX, gradeCutoffs: GRADE_CUTOFFS, acceptLabels: ACCEPT_LABEL,
   payDerivedPct: PAY_DERIVED_PCT, defaultRadiusMi: DEFAULT_RADIUS_MI, defaultStaleDays: DEFAULT_STALE_DAYS,
   employmentTypes: EMPLOYMENT_TYPES, notStated: NOT_STATED, postedBy: POSTED_BY, defaultSources: DEFAULT_SOURCES,
-  defaultConnections: DEFAULT_CONNECTIONS, configVersion: CONFIG_VERSION,
+  defaultConnections: DEFAULT_CONNECTIONS, configVersion: CONFIG_VERSION, maxDetailWorkers: MAX_DETAIL_WORKERS,
+  experienceLevels: EXPERIENCE_LEVELS,
 };
 
 // The one country JobSift searches. The state list in the setup, the
@@ -582,6 +646,6 @@ const COUNTRY = { name: 'United States', code: 'US' };
 module.exports = {
   COUNTRY,
   migrateConfig, criteriaFromConfig, scoreJob, matchRole, ageAdjust, acceptFor, payBands, industryRequired, radiusFor,
-  jobrightPlan,
-  ACCEPT, ACCEPT_LABEL, GRADE_CUTOFFS, RULES, CONFIG_VERSION, DEFAULT_RADIUS_MI, DEFAULT_STALE_DAYS,
+  searchPlan,
+  ACCEPT, ACCEPT_LABEL, GRADE_CUTOFFS, RULES, CONFIG_VERSION, MAX_DETAIL_WORKERS, EXPERIENCE_LEVELS, DEFAULT_RADIUS_MI, DEFAULT_STALE_DAYS,
 };

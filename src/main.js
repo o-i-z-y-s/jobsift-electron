@@ -15,10 +15,12 @@ const fs   = require('fs');
 const crypto = require('crypto');
 
 const cfgModule  = require('./config');
-const { RULES, jobrightPlan } = require('./criteria');
+const { RULES, searchPlan } = require('./criteria');
 const scheduler  = require('./scheduler');
 const connections = require('./connections');
 const applied = require('./applied');
+const history = require('./history');
+const runlog = require('./runlog');
 const { newListings } = require('./sources');
 const boards     = require('./boards');
 
@@ -64,10 +66,14 @@ app.commandLine.appendSwitch('disk-cache-size', '0');
 function evaluatedDir() {
   return path.join(app.getPath('userData'), 'Scrapes', 'Evaluated Scrapes');
 }
-// Intermediate folder for the raw per-source dumps and the transient merged
-// file (the merge file is deleted on a successful run).
+// Intermediate folder for the raw per-source dumps, which later runs reuse
+// (see history.js), and the transient merged file (deleted on a successful run).
 function stagingDir() {
   return path.join(app.getPath('userData'), 'Scrapes', 'Raw Scrape Staging');
+}
+// One small log per run (see runlog.js).
+function logsDir() {
+  return path.join(app.getPath('userData'), 'Logs');
 }
 function rawDir() {
   return stagingDir();
@@ -306,6 +312,7 @@ function buildTrayMenu() {
     { label: 'Settings',           click: () => { showConfig(); } },
     { label: 'Configure Schedule', click: () => { showConfig({ search: 'goto=schedule' }); } },
     { label: 'Sign In',        click: () => { getLogin().show();     } },
+    { label: 'Open Log Folder', click: () => { fs.mkdirSync(logsDir(), { recursive: true }); shell.openPath(logsDir()); } },
     { type: 'separator' },
     { label: 'Quit', click: () => { isQuitting = true; app.quit(); } },
   ]);
@@ -359,6 +366,7 @@ async function checkLoggedIn() {
 // ── Progress broadcast ────────────────────────────────────────────────────────
 
 function broadcast(channel, payload) {
+  if (channel === 'scrape:progress') runlog.progress(payload.step, payload.message);
   if (mainWin && !mainWin.isDestroyed()) {
     mainWin.webContents.send(channel, payload);
   }
@@ -396,9 +404,14 @@ async function runPipeline(options) {
 
   const cfg = cfgModule.load();
 
+  runlog.open(logsDir(), ts);
+  runlog.log(`JobSift ${app.getVersion()} run ${ts}: ${background ? 'scheduled' : 'started by hand'}, past ${daysAgo} day(s)` +
+             `${includeSeen ? ', including roles already shown' : ''}; evaluator ${EVALUATOR_ID}, config version ${cfg.config_version}`);
+
   for (const d of [evaluatedDir(), stagingDir(), rawDir()]) {
     fs.mkdirSync(d, { recursive: true });
   }
+  history.prune(rawDir());
 
   // Auth check
   broadcast('scrape:progress', { step: 'auth', message: 'Checking Jobright session...', pct: 2 });
@@ -419,22 +432,63 @@ async function runPipeline(options) {
 
   // Per-source isolation: a failure in one source (e.g. a network timeout on a
   // search-page load) must not abort the whole run and discard the other source.
-  let jobrightRaw = [];
+  // Earlier runs' saved results: what they accepted, and so already showed,
+  // is left out of this run (see sources.newListings). includeSeen keeps it all.
+  const priorRuns = [];
+  if (!includeSeen && fs.existsSync(evaluatedDir())) {
+    for (const f of fs.readdirSync(evaluatedDir()).filter(n => n.endsWith('.json'))) {
+      try { priorRuns.push(JSON.parse(fs.readFileSync(path.join(evaluatedDir(), f), 'utf8'))); }
+      catch { /* skip malformed files */ }
+    }
+  }
+  const shown = new Set(priorRuns.filter(run => run?.evaluator === EVALUATOR_ID)
+    .flatMap(run => (run.accepted?.roles || []).map(role => role.id)).filter(Boolean));
+
+  // A scheduled run searches Jobright only as far back as the last completed
+  // run, when the runs so far already cover the rest of its period with these
+  // same settings (see history.daysToSearch).
+  const started = Date.now();
+  const settingsKey = history.settingsKey(cfg, EVALUATOR_ID);
+  const covered = history.coverage(dataDir());
+  const jobrightDays = background ? history.daysToSearch(covered, settingsKey, daysAgo, started) : daysAgo;
+  if (jobrightDays < daysAgo) {
+    console.log(`Jobright: searching the past ${jobrightDays} day(s); earlier runs cover the rest of the past ${daysAgo}`);
+  }
+  console.log(`Jobright: ${shown.size} roles already shown by earlier runs`);
+
+  // Each run saves everything Jobright returned, closed postings included, so
+  // later runs do not open any of it again; the postings are also saved one by
+  // one as they are read, in case the run ends early.
+  const earlier = history.jobright(rawDir());
+  console.log(`Jobright: ${earlier.read.size} postings read and ${earlier.closed.size} found closed in the last ${history.KEEP_DAYS} days are on file`);
+  const reads = history.partial(rawDir(), 'jobright', ts);
+  const jobrightRequests = countRequests();
+  let jobrightAll = [];
+  let jobrightFailed = false;
   passControl = { abort: false };  // reset; the Abort Pass button flips abort=true
   try {
-    jobrightRaw = await jobrightScraper.run({
+    const jobright = await jobrightScraper.run({
       cfg,
-      daysAgo,
+      daysAgo: jobrightDays,
+      known: earlier.read,
+      closed: earlier.closed,
+      shown,
+      onRead: record => reads.add(record),
       signal: scrapeAbort.signal,
       passControl,
-      onProgress: (msg, pct) =>
+      onProgress: (msg, pct, line) =>
         broadcast('scrape:progress', {
           step: 'jobright',
           message: msg,
           pct: 5 + Math.round(pct * 50),
+          line,
         }),
     });
+    jobrightAll = jobright.records;
+    if (jobright.complete) history.saveCoverage(dataDir(), covered, settingsKey, jobrightDays, started);
+    console.log(`Jobright: ${jobright.complete ? 'every search ran to its end' : 'not every search ran to its end, so the next scheduled run searches the whole period again'}`);
   } catch (err) {
+    jobrightFailed = true;
     console.error('Jobright scraper failed:', err);
     broadcast('scrape:progress', {
       step: 'jobright',
@@ -442,11 +496,20 @@ async function runPipeline(options) {
       pct: 55,
     });
   }
+  // Every request the hidden windows made, by site and status. "cached" ones
+  // were answered from the browser cache without asking the site.
+  const made = jobrightRequests.stop();
+  runlog.log(`Jobright requests: ${made.total()}`);
+  for (const line of made.lines()) runlog.log(`  ${line}`);
+  // The roles: every record but the closed postings.
+  const jobrightRaw = jobrightAll.filter(r => !r.is_closed);
 
-  fs.writeFileSync(
-    path.join(rawDir(), `job-search-jobright-${ts}.json`),
-    JSON.stringify(jobrightRaw, null, 2), 'utf8',
-  );
+  // A step that failed outright keeps its partial file, the only record of
+  // what it read.
+  if (!jobrightFailed) {
+    fs.writeFileSync(path.join(rawDir(), history.rawName('jobright', ts)), JSON.stringify(jobrightAll, null, 2), 'utf8');
+    reads.remove();
+  }
   broadcast('scrape:progress', {
     step: 'jobright',
     message: `Jobright: ${jobrightRaw.length} listings collected`,
@@ -485,6 +548,7 @@ async function runPipeline(options) {
     atsRaw = await atsScraper.run({
       cfg,
       kb,
+      known: history.boards(rawDir()),
       connectionCompanies,
       signal: scrapeAbort.signal,
       onChecked: () => broadcast('connections:updated', connectionsSummary()),
@@ -505,10 +569,7 @@ async function runPipeline(options) {
   }
   try { kb.save(); } catch (err) { console.error('Saving known boards failed:', err); }
 
-  fs.writeFileSync(
-    path.join(rawDir(), `job-search-ats-http-${ts}.json`),
-    JSON.stringify(atsRaw, null, 2), 'utf8',
-  );
+  fs.writeFileSync(path.join(rawDir(), history.rawName('ats-http', ts)), JSON.stringify(atsRaw, null, 2), 'utf8');
   broadcast('scrape:progress', {
     step: 'ats',
     message: `ATS: ${atsRaw.length} listings collected`,
@@ -519,15 +580,7 @@ async function runPipeline(options) {
   broadcast('scrape:progress', { step: 'merge', message: 'Merging results...', pct: 72 });
 
   // Each posting once, leaving out what an earlier run already accepted with
-  // this same evaluator (see sources.newListings). includeSeen keeps them all.
-  const evalDir = evaluatedDir();
-  const priorRuns = [];
-  if (!includeSeen && fs.existsSync(evalDir)) {
-    for (const f of fs.readdirSync(evalDir).filter(n => n.endsWith('.json'))) {
-      try { priorRuns.push(JSON.parse(fs.readFileSync(path.join(evalDir, f), 'utf8'))); }
-      catch { /* skip malformed files */ }
-    }
-  }
+  // this same evaluator (see sources.newListings).
   const merged = newListings([...jobrightRaw, ...atsRaw], priorRuns, EVALUATOR_ID);
 
   const mergePayload = {
@@ -574,6 +627,18 @@ async function runPipeline(options) {
   return { outputPath, counts };
 }
 
+// Counts every web request made through the app's browser session until
+// stop() is called, which returns the count (a runlog.tally). During the
+// Jobright step these are the requests of the hidden Jobright windows.
+function countRequests() {
+  const made = runlog.tally();
+  const web = session.defaultSession.webRequest;
+  const isWeb = url => /^https?:/i.test(url);
+  web.onCompleted(d => { if (isWeb(d.url)) made.count(d.url, d.fromCache ? 'cached' : d.statusCode); });
+  web.onErrorOccurred(d => { if (isWeb(d.url)) made.count(d.url, 'failed'); });
+  return { stop() { web.onCompleted(null); web.onErrorOccurred(null); return made; } };
+}
+
 // ── Trigger scrape (used by tray and IPC handler) ─────────────────────────────
 
 async function triggerScrape(options) {
@@ -602,6 +667,7 @@ async function triggerScrape(options) {
     // plain canceled view if no artifact was produced.
     if (result) {
       const aborted = scrapeAbort && scrapeAbort.signal.aborted;
+      runlog.log(`Run ${aborted ? 'canceled' : 'finished'}: ${result.counts.accepted} accepted, ${result.counts.rejected} rejected; saved as ${path.basename(result.outputPath)}`);
       broadcast('scrape:complete', { ...result, canceled: !!aborted });
       if (background && !aborted) {
         const c = result.counts || {};
@@ -615,6 +681,7 @@ async function triggerScrape(options) {
   } catch (err) {
     // Not-signed-in is surfaced as a friendly prompt via 'auth:required', not a
     // hard scrape failure, so we suppress the generic error in that case.
+    runlog.log(err.message === '__AUTH_REQUIRED__' ? 'Run stopped: not signed in to Jobright' : `Run failed: ${err.stack || err.message}`);
     if (scrapeAbort && scrapeAbort.signal.aborted) {
       broadcast('scrape:canceled', {});
     } else if (err.message !== '__AUTH_REQUIRED__') {
@@ -624,6 +691,7 @@ async function triggerScrape(options) {
       }
     }
   } finally {
+    runlog.close();
     scrapeAbort = null;
     refreshTrayMenu();
   }
@@ -655,7 +723,7 @@ function registerIpc() {
   ipcMain.handle('config:rules', () => RULES);
   // The titles each run searches Jobright and Workday boards for, and where
   // Jobright is searched, with the given settings.
-  ipcMain.handle('config:jobrightPlan', (_e, cfg) => jobrightPlan(cfg || {}));
+  ipcMain.handle('config:searchPlan', (_e, cfg) => searchPlan(cfg || {}));
 
   // Scrape lifecycle
   // Fire-and-forget: triggerScrape is long-running (full pipeline).

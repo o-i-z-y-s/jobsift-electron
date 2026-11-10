@@ -293,8 +293,8 @@
   <p class="hint">A job is considered only if its title contains one of these roles. When several match, the longest
     (most specific) one counts, so you can list a general role as Good and a more specific one as Ideal.
     <strong>Fit</strong>: <span id="fit-explain"></span> <strong>Search</strong>: each run searches for it on
-    Jobright and on the company boards searched by title (Workday, Eightfold, and Oracle); leave it off for a role to accept only
-    when another search turns it up. <strong>Tracks</strong>: the tracks that accept it. <strong>Dashboard tab</strong>: where its
+    the company boards searched by title (Workday, Eightfold, and Oracle); leave it off for a role to accept only when another
+    search turns it up. Jobright is searched for the titles on the Sources tab. <strong>Tracks</strong>: the tracks that accept it. <strong>Dashboard tab</strong>: where its
     jobs are grouped in your results.</p>
   <div class="warn" id="role-warn" style="display:none;margin:0 0 10px"></div>
   <div class="role-row role-head"><span>Role</span><span>Fit</span><span>Search</span><span>Tracks</span><span>Dashboard tab</span><span></span></div>
@@ -427,6 +427,20 @@
 <div id="tab-sources" class="tab">
   <h2>Sources</h2>
 
+  <h3>Jobright</h3>
+  <p class="hint">Each run searches Jobright once for each title here, for the arrangements your tracks accept: remote roles from
+    anywhere in the country, and onsite or hybrid roles near your tracks&rsquo; locations. Every card is judged on what it shows
+    first, and only the postings that pass are opened, so each title you add means more requests to Jobright. Jobright finds titles that contain
+    yours, so a short title also finds the longer titles built on it.</p>
+  <label>Search titles</label>
+  <div id="tag-jobright_titles" class="tag-section"></div>
+  <p class="hint" id="jobright-plan" style="margin-top:6px"></p>
+  <div class="field" style="margin-top:14px">
+    <label>Experience levels</label>
+    <div class="wt-selector" id="jobright-levels"></div>
+    <div class="hint" style="margin-top:4px">Jobright&rsquo;s own levels: it leaves out roles at the levels you turn off.</div>
+  </div>
+
   <div class="field-row col4">
     <div class="field">
       <label>Lowest Jobright match % to open</label>
@@ -501,13 +515,15 @@
       <input type="number" id="scroll_pause_ms" min="0">
     </div>
     <div class="field">
-      <label>Postings opened at once</label>
-      <input type="number" id="detail_workers" min="1" max="16">
+      <label>Jobright postings opened at once</label>
+      <input type="number" id="detail_workers" min="1" max="2">
     </div>
   </div>
 
   <h3 id="sched-section">Scheduled runs</h3>
-  <p class="hint">JobSift must be running (it stays in the tray) for a scheduled run to happen.</p>
+  <p class="hint">JobSift must be running (it stays in the tray) for a scheduled run to happen. A scheduled run searches Jobright
+    only as far back as the last completed run, as long as your settings have not changed since; otherwise it searches the
+    whole timeframe below.</p>
   <div class="field" style="margin-bottom:10px">
     <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
       <input type="checkbox" id="sched_enabled"> Enable scheduled runs
@@ -623,6 +639,11 @@
         <label>Titles to avoid <span style="color:var(--muted);font-weight:400">(reject when the title contains any of these)</span></label>
         <div id="wiz-tag-block" class="tag-section"></div>
       </div>
+      <div class="field" style="margin-top:18px">
+        <label>Titles to search Jobright for <span style="color:var(--muted);font-weight:400">(as few as cover your roles: each one
+          is a search per run, and Jobright finds titles that contain it)</span></label>
+        <div id="wiz-tag-jobright" class="tag-section"></div>
+      </div>
       <div class="wiz-nav">
         <button class="btn-wiz-secondary" onclick="wizGo(2)">&larr; Back</button>
         <div class="spacer"></div>
@@ -651,7 +672,7 @@
     <div class="wiz-step" id="wiz-s5" style="display:none">
       <h2>&#127970; Company job boards <span style="font-weight:400;font-size:14px;color:var(--muted)">(optional)</span></h2>
       <div class="wiz-sub">
-        JobSift searches Jobright.ai for the roles you listed, wherever your tracks say you want to work. It can also search
+        JobSift searches Jobright.ai for the titles you chose, wherever your tracks say you want to work. It can also search
         companies&rsquo; own job boards on most major hiring systems, which catches postings Jobright misses.
         Type a company name and press <strong>Add</strong>: JobSift looks for its public job board. For Workday, Oracle, and
         iCIMS, also add the careers page link.
@@ -796,6 +817,8 @@ function normalize() {
   c.ats_boards        = { greenhouse: {}, lever: {}, ashby: {}, gem: {}, rippling: {}, workable: {}, workday_direct: {},
                           oracle: {}, eightfold: {}, icims: {}, workday_companies: {}, ...(c.ats_boards || {}) };
   c.settings          = { ...(c.settings || {}) };
+  c.jobright          = { search_titles: [], experience_levels: [], ...(c.jobright || {}) };
+  for (const k of ['search_titles', 'experience_levels']) if (!Array.isArray(c.jobright[k])) c.jobright[k] = [];
   c.pipeline          = { search_term: '', ...(c.pipeline || {}) };
   c.connections       = { ...RULES.defaultConnections, ...(c.connections || {}) };
   for (const t of c.tracks) for (const k of ['work_types', 'employment_types', 'title_block', 'excluded_companies', 'blocked_industries', 'target_companies']) {
@@ -858,6 +881,7 @@ function showTab(id, btn) {
   $('tab-' + id).classList.add('active');
   btn.classList.add('active');
   if (id === 'roles') { renderRoleTable(); refreshSearchPlan(); }   // tracks may have changed
+  if (id === 'sources') refreshSearchPlan();
 }
 function setStatus(msg, cls) { const el = $('status'); el.textContent = msg; el.className = cls || ''; }
 function toast(msg, isErr) {
@@ -1075,6 +1099,7 @@ function renderRules() {
 
 // ── Lists (Avoid tab, target companies) ─────────────────────────────────────
 const LISTS = {
+  jobright_titles:              () => CONFIG.jobright.search_titles,
   title_block:                  () => CONFIG.title_filters.title_block,
   target_companies:             () => CONFIG.company_lists.target_companies,
   blocked_companies:            () => CONFIG.company_lists.blocked_companies,
@@ -1087,7 +1112,7 @@ const LISTS = {
   description_blockers:         () => CONFIG.rejection_filters.description_blockers,
 };
 function renderLists() {
-  for (const [k, get] of Object.entries(LISTS)) buildTagWidget($('tag-' + k), get());
+  for (const [k, get] of Object.entries(LISTS)) buildTagWidget($('tag-' + k), get(), k === 'jobright_titles' ? refreshSearchPlan : null);
 }
 
 function renderLimits() {
@@ -1109,6 +1134,7 @@ function renderSettings() {
   $('min_match_pct').value        = s.min_match_pct ?? '';
   $('scroll_pause_ms').value      = s.scroll_pause_ms ?? '';
   $('detail_workers').value       = s.detail_workers ?? '';
+  buildLevelSelector($('jobright-levels'));
   $('user_state').innerHTML       = stateOptions(CONFIG.user_state || '');
   $('user_state').style.color     = CONFIG.user_state ? 'var(--text)' : 'var(--muted)';
 }
@@ -1119,6 +1145,7 @@ function collectSettings() {
   s.min_match_pct    = num($('min_match_pct').value);
   s.scroll_pause_ms  = num($('scroll_pause_ms').value);
   s.detail_workers   = num($('detail_workers').value);
+  if (s.detail_workers !== null) s.detail_workers = Math.min(RULES.maxDetailWorkers, Math.max(1, s.detail_workers));
   CONFIG.user_state = $('user_state').value;
 }
 
@@ -1763,31 +1790,59 @@ function initDragDrop() {
 // ══════════════════════════════════════════════════════════════════════════════
 //  WHAT EACH RUN SEARCHES FOR
 // ══════════════════════════════════════════════════════════════════════════════
-// Worked out by the engine (criteria.jobrightPlan) from the roles and tracks as
-// they are on this page now, and shown under the roles. Nothing to fill in.
+// Worked out by the engine (criteria.searchPlan) from the roles, tracks, and
+// Jobright titles as they are on this page now: the company boards under the
+// roles, Jobright on the Sources tab. Nothing to fill in.
 const andList = items => items.length < 3 ? items.join(' and ') : `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
 
 function refreshSearchPlan() {
-  if (!window.electronAPI?.getJobrightPlan || !$('search-plan')) return;
+  if (!window.electronAPI?.getSearchPlan || !$('search-plan')) return;
   document.querySelectorAll('#tracks-list .track-card').forEach(syncTrack);
-  window.electronAPI.getJobrightPlan({ roles: CONFIG.roles.filter(r => r.title.trim()), tracks: CONFIG.tracks, title_filters: CONFIG.title_filters })
+  window.electronAPI.getSearchPlan({ roles: CONFIG.roles.filter(r => r.title.trim()), tracks: CONFIG.tracks,
+                                     title_filters: CONFIG.title_filters, jobright: CONFIG.jobright })
     .then(plan => {
       showFruitlessRoles(plan.fruitless || []);
-      if (!plan.titles.length) {
-        $('search-plan').innerHTML = CONFIG.roles.length ? '<strong>Nothing is searched for.</strong> Tick Search for at least one role.' : '';
-        return;
-      }
-      const titles = andList(plan.titles.map(t => `&ldquo;${escHtml(t)}&rdquo;`));
-      const why = plan.titles.length > 1 ? ', the fewest of your searched roles that also find the rest' : '';
-      const places = [plan.remote ? 'for remote roles' : '', ...plan.areas.map(a => `near ${escHtml(a.location)} (${a.radius} mi)`)].filter(Boolean);
-      const n = plan.titles.length * places.length;
-      $('search-plan').innerHTML = (places.length
-        ? `<strong>Each run searches</strong> Jobright, and company boards on Workday, Eightfold, and Oracle, for ${titles}${why}. ` +
-          `Jobright is searched ${andList(places)}: ${n} search${n === 1 ? '' : 'es'}.`
-        : `<strong>Each run searches</strong> company boards on Workday, Eightfold, and Oracle for ${titles}${why}. ` +
-          'Jobright is searched once a track accepts remote work or has a location.');
+      const quoted = list => andList(list.map(t => `&ldquo;${escHtml(t)}&rdquo;`));
+      $('search-plan').innerHTML = !plan.titles.length
+        ? (CONFIG.roles.length ? '<strong>No company board is searched by title.</strong> Tick Search for at least one role.' : '')
+        : `<strong>Each run searches</strong> company boards on Workday, Eightfold, and Oracle for ${quoted(plan.titles)}` +
+          `${plan.titles.length > 1 ? ', the fewest of your searched roles that also find the rest' : ''}.`;
+      const places = [plan.remote ? 'for remote roles' : '',
+        plan.areas.length ? `near ${andList(plan.areas.map(a => `${escHtml(a.location)} (${a.radius} mi)`))}` : ''].filter(Boolean);
+      const n = places.length ? plan.jobright.length : 0;
+      const f = plan.jobrightFilters;
+      const only = [f.employmentTypes ? `${andList(f.employmentTypes)} roles` : '', f.experienceLevels ? andList(f.experienceLevels) : '',
+        f.noClearance ? 'no roles needing a security clearance' : '',
+        f.blockedIndustries ? `no companies in ${andList(f.blockedIndustries)}` : ''].filter(Boolean);
+      $('jobright-plan').innerHTML = !plan.jobright.length ? '<strong>Jobright is not searched.</strong> Add at least one title.'
+        : !places.length ? '<strong>Jobright is not searched</strong> until a track accepts remote work or has a location.'
+        : `<strong>Each run makes ${n} Jobright search${n === 1 ? '' : 'es'}:</strong> ${quoted(plan.jobright)}, ${andList(places)}` +
+          (only.length ? `. Jobright returns only ${escHtml(only.join('; '))}, from your tracks, Avoid lists, and the levels below.` : '.');
     })
     .catch(() => {});
+}
+
+// Jobright experience levels searched. An empty list means every level; at
+// least one stays selected.
+function buildLevelSelector(container) {
+  const all = RULES.experienceLevels;
+  const chosen = () => (CONFIG.jobright.experience_levels.length ? CONFIG.jobright.experience_levels : all);
+  container.innerHTML = '';
+  for (const opt of all) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = opt;
+    btn.className = 'wt-pill' + (chosen().includes(opt) ? ' selected' : '');
+    btn.onclick = () => {
+      const cur = chosen();
+      const next = cur.includes(opt) ? cur.filter(x => x !== opt) : [...cur, opt];
+      if (!next.length) return toast('Search at least one experience level', true);
+      CONFIG.jobright.experience_levels = next.length === all.length ? [] : all.filter(x => next.includes(x));
+      container.querySelectorAll('.wt-pill').forEach(b => b.classList.toggle('selected', chosen().includes(b.textContent)));
+      refreshSearchPlan();
+    };
+    container.appendChild(btn);
+  }
 }
 
 // Searched roles whose searches can only find jobs that are then rejected
@@ -1839,7 +1894,7 @@ function returnHome() { window.location.href = '../dashboard/index.html'; }
 // ══════════════════════════════════════════════════════════════════════════════
 const WIZ_TOTAL = 8;
 const wiz = {
-  roles: { ideal: [], good: [], acceptable: [] }, block: [],
+  roles: { ideal: [], good: [], acceptable: [] }, block: [], jobright: [],
   industries: { strong: [], some: [] }, skills: [],
   avoidIndustries: [], companies: [], phrases: [],
   workTypes: ['Remote'],
@@ -1866,18 +1921,20 @@ function initWizard() {
   const rp = RULES.rolePoints, gc = Object.fromEntries(RULES.gradeCutoffs);
   $('wiz-roles-points').textContent =
     `How much a role is worth: ${fitExplanation().replace(' (see How the match score works, below)', '')} ` +
-    'When several match, the longest (most specific) one counts. Ideal and Good roles are searched for; Acceptable roles ' +
-    'are kept when another search turns them up. You can change this for each role on the Roles tab.';
+    'When several match, the longest (most specific) one counts. Company boards are searched for Ideal and Good roles; ' +
+    'Acceptable roles are kept when another search turns them up. You can change this for each role on the Roles tab.';
   $('wiz-grades-hint').textContent =
     `Each job gets a match score out of 100 from its title, pay, industry, and skills. ` +
     `Grade A from ${gc.A}, B from ${gc.B}, C from ${gc.C}; below ${gc.C} is not a match.`;
   wiz.skills          = [...CONFIG.skills];
   wiz.block           = [...CONFIG.title_filters.title_block];
+  wiz.jobright        = [...CONFIG.jobright.search_titles];
   wiz.avoidIndustries = [...CONFIG.rejection_filters.blocked_industries];
   wiz.companies       = [...CONFIG.company_lists.blocked_companies];
   wiz.phrases         = [...CONFIG.rejection_filters.description_blockers];
   buildTagWidget($('wiz-tag-skills'),       wiz.skills);
   buildTagWidget($('wiz-tag-block'),        wiz.block);
+  buildTagWidget($('wiz-tag-jobright'),     wiz.jobright);
   buildTagWidget($('wiz-tag-industries'),   wiz.avoidIndustries);
   buildTagWidget($('wiz-tag-companies'),    wiz.companies);
   buildTagWidget($('wiz-tag-descblockers'), wiz.phrases);
@@ -1986,6 +2043,7 @@ function _wizApplyToConfig() {
   CONFIG.industries = STRENGTHS.flatMap(s => wiz.industries[s].map(name => ({ name, strength: s })));
   CONFIG.skills = [...wiz.skills];
   CONFIG.title_filters.title_block = [...wiz.block];
+  CONFIG.jobright.search_titles = [...wiz.jobright];
 
   const city  = $('wiz-t-city').value.trim();
   const state = $('wiz-t-state').value.trim();

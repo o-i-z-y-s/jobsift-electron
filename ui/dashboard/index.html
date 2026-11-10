@@ -990,7 +990,7 @@ if (window.electronAPI) {
   }).catch(() => {});
 
   // Scrape progress events: store cleanup fns to prevent listener accumulation on reload
-  const _cleanupProgress = window.electronAPI.onScrapeProgress(({ step, message, pct }) => {
+  const _cleanupProgress = window.electronAPI.onScrapeProgress(({ step, message, pct, line }) => {
     // progress-panel lives inside #dropzone, so we must ensure dropzone is visible
     // regardless of whether the dashboard is currently showing (re-scrape case).
     document.getElementById('dashboard').style.display    = 'none';
@@ -1009,7 +1009,7 @@ if (window.electronAPI) {
       if (btn) { btn.textContent = 'Cancel Scrape'; btn.disabled = false; btn.style.opacity = '1'; }
       if (errorMsg) errorMsg.style.display = 'none';
     }
-    appendProgressLog(message);
+    appendProgressLog(message, line);
   });
 
   const _cleanupComplete = window.electronAPI.onScrapeComplete(({ outputPath, counts, canceled }) => {
@@ -1096,26 +1096,38 @@ function setIncludeSeen(v) {
   document.querySelectorAll('.include-seen').forEach(c => { c.checked = _includeSeen; });
 }
 
-// Append a line to the live activity feed, skipping consecutive duplicates and
-// keeping the list to a sane length. The feed follows new lines only while it
-// is scrolled to the bottom; once the user scrolls up, it stays where they put it.
-function appendProgressLog(message) {
+// Append a line to the live activity feed, with the time it started (HH:MM:SS),
+// skipping consecutive duplicates and keeping the list to a sane length. A
+// message with the same lineId as the previous line replaces that line's text,
+// so one thing reporting its progress stays one line. The feed follows new
+// lines only while it is scrolled to the bottom; once the user scrolls up, it
+// stays where they put it.
+function appendProgressLog(message, lineId = '') {
   const log = document.getElementById('progress-log');
   if (!log || !message) return;
   const following = log.scrollHeight - log.scrollTop - log.clientHeight < 8;
   const last = log.lastChild;
+  const lastText = last ? last.lastChild.textContent : '';
+  const replaceLast = () => { last.lastChild.textContent = message; if (following) log.scrollTop = log.scrollHeight; };
+  if (last && lineId && last.dataset.line === lineId) return replaceLast();
   // Collapse repetitive "n/total" or "n of total" progress: if the new line has
   // the same text before the count as the previous line, update that line in
   // place instead of printing a new one for every page.
   const RATIO = /^(.*?)(\d+)\s*(?:\/|of)\s*(\d+)\s*$/;
   const m = message.match(RATIO);
   if (m && last) {
-    const lm = (last.textContent || '').match(RATIO);
-    if (lm && lm[1] === m[1]) { last.textContent = message; if (following) log.scrollTop = log.scrollHeight; return; }
+    const lm = lastText.match(RATIO);
+    if (lm && lm[1] === m[1]) return replaceLast();
   }
-  if (last && last.textContent === message) return;  // skip consecutive duplicates
+  if (last && lastText === message) return;  // skip consecutive duplicates
   const line = document.createElement('div');
-  line.textContent = message;
+  if (lineId) line.dataset.line = lineId;
+  const time = document.createElement('span');
+  time.textContent = new Date().toTimeString().slice(0, 8) + ' ';
+  time.style.opacity = '0.6';
+  const text = document.createElement('span');
+  text.textContent = message;
+  line.append(time, text);
   log.appendChild(line);
   // Lines dropped from the top would shift what the user is reading upward.
   let dropped = 0;

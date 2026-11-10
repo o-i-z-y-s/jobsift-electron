@@ -4,14 +4,15 @@
  * src/eval.js
  * Scoring engine.
  * run(mergePayload, cfg) -> evaluated JSON with { meta, accepted:{roles}, rejected:{roles} },
- * which is the shape ui/dashboard/index.html reads.
+ * which is the shape ui/dashboard/index.html reads. With cardOnly, it screens
+ * Jobright search cards before their postings are opened (see run).
  * Async because geo-checking requires network calls (Nominatim API with local cache).
  */
 
 const { app } = require('electron');
 const fs   = require('fs');
 const path = require('path');
-const { employmentTypeOf, sourcesFromConfig, postedByAll, groupSameJob, SOURCE_RANK, NOT_STATED } = require('./sources');
+const { employmentTypeOf, sourcesFromConfig, postedByAll, groupSameJob, cardFields, SOURCE_RANK, NOT_STATED } = require('./sources');
 const { migrateConfig, criteriaFromConfig, scoreJob, matchRole, ageAdjust, acceptFor, industryRequired, radiusFor,
         ACCEPT, ACCEPT_LABEL, COUNTRY } = require('./criteria');
 
@@ -374,10 +375,9 @@ function officesOf(display) {
  * One track's place gates: the location (US only, within the commute radius
  * for a posting worked on site) and the work arrangement. Returns { reason }
  * when the track rejects it, or { stateOnly, geoUnknown } for what could not
- * be confirmed about the location. With anywhere, the location is not checked
- * against the commute radius (a posting placed only in the country).
+ * be confirmed about the location.
  */
-async function placeGate(track, trackId, wbEff, locDisplay, { anywhere = false } = {}) {
+async function placeGate(track, trackId, wbEff, locDisplay) {
   let stateOnly = false;   // posting gives only the state, no city
   let geoUnknown = false;
   if (wbEff === 'remote') {
@@ -388,9 +388,9 @@ async function placeGate(track, trackId, wbEff, locDisplay, { anywhere = false }
                     new RegExp(`,\\s*(?:${stAbbrs})\\b`, 'i').test(locDisplay || '');
       if (!hasUs) return { reason: `Geo: Remote role outside USA or global (${locDisplay})` };
     }
-  } else if (locDisplay && track.target_location && !anywhere && COUNTRY_PART_RE.test(locDisplay.trim())) {
+  } else if (locDisplay && track.target_location && COUNTRY_PART_RE.test(locDisplay.trim())) {
     return { reason: 'Geo: No city or state given' };
-  } else if (locDisplay && track.target_location && !anywhere) {
+  } else if (locDisplay && track.target_location) {
     // A place given only as a state matches on the state: this track's own.
     const parts = locDisplay.split(/\s*[;•\/]\s*/).filter(Boolean);
     const bare = parts.filter(p => stateOf(p));
@@ -466,8 +466,14 @@ function placeChecker(cfgIn) {
  * run(mergePayload, cfg) -> evaluated output object
  * mergePayload: { results: [], scan_label, date, days_ago }
  * cfg: parsed config.json
+ *
+ * With cardOnly, the results are Jobright search cards (title, company,
+ * location, work type, pay, and the card's text), and only what a card shows
+ * is judged: a card is rejected only when its full posting could not change
+ * the outcome. The industry tags on the card count toward the blocked
+ * industries. Returns a Map of each rejected card's jid to its reason.
  */
-async function run(mergePayload, cfgIn) {
+async function run(mergePayload, cfgIn, { cardOnly = false } = {}) {
   const cfg         = migrateConfig(cfgIn).config;   // no-op for a current config
   const resultsRaw  = mergePayload.results || [];
   const scanLabel   = mergePayload.scan_label || 'This scan';
@@ -481,7 +487,7 @@ async function run(mergePayload, cfgIn) {
   const trackPri = Object.fromEntries(Object.keys(tracks).map((k, i) => [k, i]));
 
   const allResults = resultsRaw;
-  console.log(`  ${allResults.length} listings to evaluate`);
+  console.log(cardOnly ? `  Screening ${allResults.length} Jobright cards` : `  ${allResults.length} listings to evaluate`);
 
   // ── Pre-build regexes ──────────────────────────────────────────────────────
 
@@ -688,31 +694,39 @@ async function run(mergePayload, cfgIn) {
     const mid     = salaryMid(salary);
     const noSalary = lo === null;
     const postedDays = daysFromCard(card);
-    const allText  = `${title} ${company} ${resps} ${req} ${pref}`;
+    const allText  = `${title} ${company} ${resps} ${req} ${pref}${cardOnly ? ' ' + (cardFields(card)?.tags || '') : ''}`;
     const travel   = travelPct(allText);
     const clearancePresent = CLEARANCE_REQ.test(allText) || CLEARANCE_OBTAIN.test(allText);
 
-    // Mislabeled in-person: remote-tagged but location is a specific city
+    // Mislabeled in-person: remote-tagged but location is a specific city,
+    // and nothing in the posting says remote (not judged from a card alone)
     let wtMut = wt;
     const locLead = loc && loc.includes(',') ? loc.split(',')[0].trim() : loc;
-    if (/remote/i.test(wt) && loc &&
+    if (!cardOnly && /remote/i.test(wt) && loc &&
         !/\b(remote|united\s+states?|usa|anywhere|worldwide|nationwide|virtual|wfh|work\s+from\s+home)\b/i.test(locLead) &&
         !/\bremote\b/i.test(loc) && !/\bremote\b/i.test(allText)) {
       wtMut = 'Onsite';
     }
 
+    // Placed only in the country: there is no site to work at, so the posting
+    // is remote whatever its label says. Jobright labels such postings on
+    // site; that label is flagged. (A job board's own "Onsite" there is only
+    // what its scraper fills in when the board states no arrangement.)
+    const countryOnly = !loc && COUNTRY_PART_RE.test(String(r.location || '').trim());
+    const onsiteLabelIgnored = countryOnly && wtBucket(wtMut) === 'in-person' && !jid.startsWith('ats_');
+    if (countryOnly && wtBucket(wtMut) === 'in-person') wtMut = 'Remote';
+
     const locDisplay = loc || (/remote/i.test(wtMut) ? 'Remote - US' : 'USA');
     // "Irvine, CA +2 more": locations the listing does not name.
     const moreUnlisted = Number(/\+\s*(\d+)\s+more\b/i.exec(r.location || '')?.[1] || 0);
     let wb  = wtBucket(wtMut);
-    const locOffersRemote = offersRemote(loc, r.location);
-    // Labeled on site but placed only in the country: likely heavy travel. It is
-    // taken as hybrid, with no commute check, and flagged.
-    const travelHeavy = !loc && COUNTRY_PART_RE.test(String(r.location || '').trim()) && wb === 'in-person';
-    let wbEff = travelHeavy ? 'hybrid' : locOffersRemote ? 'remote' : wb;
-    if (wbEff === 'hybrid' && !travelHeavy && REMOTE_WORK_SIGNAL.test(resps + ' ' + req + ' ' + pref)) {
+    const locOffersRemote = countryOnly || offersRemote(loc, r.location);
+    let wbEff = locOffersRemote ? 'remote' : wb;
+    if (wbEff === 'hybrid' && REMOTE_WORK_SIGNAL.test(resps + ' ' + req + ' ' + pref)) {
       wbEff = 'remote';
     }
+    // On a card, a hybrid role may still turn out remote from its posting.
+    const mayBeRemote = cardOnly && wbEff === 'hybrid';
 
     // One body-text sweep for this role, reused by the per-track gates below.
     const bodyArr = analyzeBody(`${resps} ${req}`, title);
@@ -720,14 +734,14 @@ async function run(mergePayload, cfgIn) {
     // ── Universal hard disqualifiers ────────────────────────────────────────
     let done = false;
 
-    // Rejected from its Jobright card by an Avoid rule, without being opened
-    // (see avoidOnCard in scraper/jobright.js).
+    // Rejected from its Jobright card or a job board's search result, without
+    // being opened (see screenCards in scraper/jobright.js).
     if (r.avoided) {
       const where = jid.startsWith('ats_') ? "the job board's search results" : 'the Jobright card';
       univRej(jid,idx,title,company,salary,wtMut,wbEff,locDisplay,pct,postedDays,r.avoided,`Rejected from ${where}; the posting was not opened`,ats,sp);
       done = true;
     }
-    if (!done && !resps && !req && !pref) {
+    if (!done && !cardOnly && !resps && !req && !pref) {
       univRej(jid,idx,title,company,salary,wtMut,wbEff,locDisplay,pct,postedDays,'Universal: No job description available - returned empty content','',ats,sp);
       done = true;
     }
@@ -796,8 +810,8 @@ async function run(mergePayload, cfgIn) {
         }
         if (nearOffice) { trackWb = wb === 'in-person' ? 'in-person' : 'hybrid'; trackLoc = offices.join(' / '); }
       }
-      const place = await placeGate(track, trackId, trackWb, trackLoc, { anywhere: travelHeavy });
-      if (place.reason) {
+      const place = await placeGate(track, trackId, trackWb, trackLoc);
+      if (place.reason && !(mayBeRemote && (track.work_types || []).includes('Remote'))) {
         trackRejs[trackId] = nearOffice && / not accepted on this track$/.test(place.reason)
           ? `Track ${trackId}: In person expected - you are within commute range of its ${nearOffice} office`
           : moreUnlisted && /^Geo: Location (outside|not geocodable)/.test(place.reason)
@@ -805,7 +819,7 @@ async function run(mergePayload, cfgIn) {
             : place.reason;
         continue;
       }
-      const { stateOnly: locStateOnly, geoUnknown: locGeoUnknown } = place;
+      const { stateOnly: locStateOnly = false, geoUnknown: locGeoUnknown = false } = place;
       const acceptedWt = new Set((track.work_types || []).map(w => w.toLowerCase()));
 
       // ── Employment type ───────────────────────────────────────────────────
@@ -816,7 +830,7 @@ async function run(mergePayload, cfgIn) {
       }
 
       // ── Disguised hybrid/in-person ─────────────────────────────────────────
-      if (trackWb === 'remote' && !acceptedWt.has('hybrid')) {
+      if (!cardOnly && trackWb === 'remote' && !acceptedWt.has('hybrid')) {
         if (bodyArr.hybridSnippet) {
           hybridWarnings.push(`${company} - ${title}: disguised hybrid '${bodyArr.hybridSnippet}'`);
           trackRejs[trackId] = `Track ${trackId}: Disguised hybrid - '${bodyArr.hybridSnippet}'`; continue;
@@ -868,7 +882,7 @@ async function run(mergePayload, cfgIn) {
       }
 
       // ── Salary gate ────────────────────────────────────────────────────────
-      if (noSalary && track.reject_if_no_salary) {
+      if (noSalary && track.reject_if_no_salary && !cardOnly) {
         trackRejs[trackId] = `Track ${trackId}: Salary required on this track - not disclosed`; continue;
       }
 
@@ -883,6 +897,9 @@ async function run(mergePayload, cfgIn) {
       // Only for a role taken as remote: an office in range is a choice of its own.
       const geoRej = trackWb === 'remote' ? checkGeoRestriction(locDisplay, ats, card, resps + ' ' + req) : null;
       if (geoRej) { trackRejs[trackId] = `Track ${trackId}: ${geoRej}`; continue; }
+
+      // A card that passes everything it shows is opened and judged in full.
+      if (cardOnly) { accepted = true; break; }
 
       // ── Scoring ───────────────────────────────────────────────────────────
       // Match score out of 100 (see criteria.js). The track's bar is checked
@@ -909,7 +926,7 @@ async function run(mergePayload, cfgIn) {
       const flags = [], notesList = [];
       if (locStateOnly)   flags.push(`Location is listed only as "${locDisplay}" - confirm it is within commute range`);
       if (locGeoUnknown)  flags.push('Location could not be verified - confirm it is within commute range');
-      if (travelHeavy)    flags.push('Labeled on site with only the country as its location - likely heavy travel; taken as hybrid, confirm before applying');
+      if (onsiteLabelIgnored) flags.push('Jobright labels this on site, but its only location is the country - taken as remote; confirm before applying');
       if (nearOffice)     flags.push(`Listed as remote, but you are within commute range of its ${nearOffice} office - expect to work there in person`);
       const by = info[idx].by;
       if (by.kind === 'job_board' && src.reposts === 'flag') {
@@ -986,6 +1003,7 @@ async function run(mergePayload, cfgIn) {
 
   // Save geocache after eval loop (may have made new requests)
   saveGeocache();
+  if (cardOnly) return new Map(rejectedRaw.map(r => [r.jid, r.reason]));
 
   // ── Post-eval dedup by ATS URL ─────────────────────────────────────────────
   function atsKey(e) {
@@ -1233,4 +1251,4 @@ async function run(mergePayload, cfgIn) {
   };
 }
 
-module.exports = { run, placeChecker, saveGeocache, stateNameOf, namesOnlyAState };
+module.exports = { run, placeChecker, saveGeocache, stateNameOf, namesOnlyAState, daysFromCard };

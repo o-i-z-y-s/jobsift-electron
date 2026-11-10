@@ -16,7 +16,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadConfig: () => ipcRenderer.invoke('config:load'),
   saveConfig: (config) => ipcRenderer.invoke('config:save', config),
   getScoringRules: () => ipcRenderer.invoke('config:rules'),
-  getJobrightPlan: (config) => ipcRenderer.invoke('config:jobrightPlan', config),
+  getSearchPlan: (config) => ipcRenderer.invoke('config:searchPlan', config),
 
   // ── Scrape lifecycle ────────────────────────────────────────────────────────
   startScrape:  (options) => ipcRenderer.invoke('scrape:start', options),

@@ -1,5 +1,5 @@
 {
-  "config_version": 5,
+  "config_version": 6,
   "setup_complete": false,
   "user_state": "",
   "roles": [],
@@ -80,8 +80,12 @@
   "settings": {
     "min_match_pct": 60,
     "scroll_pause_ms": 1800,
-    "detail_workers": 6,
+    "detail_workers": 2,
     "stale_after_days": 21
+  },
+  "jobright": {
+    "search_titles": [],
+    "experience_levels": []
   },
   "pipeline": {
     "search_term": ""
