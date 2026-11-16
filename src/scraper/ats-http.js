@@ -41,6 +41,7 @@ function sleep(ms, signal = null) {
 // lane of the board that asked for it.
 
 const RATE_BACKOFFS = [5000, 10000, 20000];
+const REFUSED_REST_MS = 60000;   // before a board that used up those retries is tried once more
 const MAX_WAIT = 30000;
 const MAX_GAP  = 8000;
 const hostGap  = new Map();   // host -> ms between requests
@@ -355,6 +356,10 @@ function ghIsVagueLocation(loc) {
   return GH_STATES.has((loc || '').trim().toLowerCase());
 }
 
+// A location that names no place, only how the job is worked ("Hybrid",
+// "In-Office", "US - Hybrid"): the place is in the posting's offices.
+const GH_NO_PLACE = /^(?:(?:us|usa|united\s+states)\s*-\s*)?(?:hybrid|in[-\s]?office|on[-\s]?site)(?:\s*;\s*(?:hybrid|in[-\s]?office|on[-\s]?site))*$/i;
+
 async function ghLocationFromDetail(slug, jobId, prefetched) {
   let data = prefetched;
   if (!data) {
@@ -445,7 +450,10 @@ async function scrapeGreenhouse(company, board, titleMatches, signal = null, rep
     if (!titleMatches(title)) continue;
 
     const stamp  = job.updated_at || '';
-    const before = readBefore(`ats_gh_${job.id}`, title, company, stamp);
+    // A record whose location named no place is read again once, for its offices.
+    const kept   = earlier.get(`ats_gh_${job.id}`);
+    const before = !(kept && GH_NO_PLACE.test(kept.location || '') && !kept.offices_read) &&
+                   readBefore(`ats_gh_${job.id}`, title, company, stamp);
     if (before) { matches.push(before); continue; }
 
     // The list has titles only; each match's text, pay, and offices are one
@@ -463,17 +471,19 @@ async function scrapeGreenhouse(company, board, titleMatches, signal = null, rep
 
     const salary = ghSalary(detail.metadata || job.metadata, contentText) || await ghSalaryFromDetail(board, job.id, detail);
     let finalLoc = locName;
-    if (ghIsVagueLocation(locName)) {
+    const noPlace = GH_NO_PLACE.test(locName);
+    if (ghIsVagueLocation(locName) || noPlace) {
       const better = await ghLocationFromDetail(board, job.id, detail);
       if (better) finalLoc = better;
     }
 
     const [resp_, req_, pref_] = splitDescription(contentText);
-    const wt = normalizeWorkType(finalLoc);
+    const wt = normalizeWorkType(finalLoc, noPlace ? locName : '');
     const sp = searchPass(finalLoc, wt);
 
     matches.push({
       jid:              `ats_gh_${job.id}`,
+      ...(noPlace ? { offices_read: true } : {}),
       list_stamp:       stamp,
       url:              jobUrl,
       match_pct:        100,
@@ -869,20 +879,28 @@ async function fetchWdDescription(baseUrl, tenant, site, extPath, signal = null)
   return {};
 }
 
+const WD_PAGE = 20;
+const WD_DRY_PAGES = 3;
+const WD_MAX_PAGES = 30;
+
 async function scrapeWorkday(company, baseUrl, tenant, site, searchTerms, titleMatches, signal = null, report = () => {}) {
   const searchUrl = `${baseUrl}/wday/cxs/${tenant}/${site}/jobs`;
   const allJobs   = [];
 
+  // A search is read a page at a time until its results run out: a page
+  // shorter than WD_PAGE, the total the board gives (not every board gives
+  // one, and some only with the first page), WD_DRY_PAGES pages in a row
+  // without a matching title, or WD_MAX_PAGES.
   for (const keyword of searchTerms) {
-    let offset = 0;
-    while (true) {
+    let offset = 0, total = 0, dry = 0;
+    for (let page = 0; page < WD_MAX_PAGES; page++) {
       let r;
       if (signal?.aborted) break;
       try {
         r = await fetchRetry(searchUrl, {
           method:  'POST',
           headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ appliedFacets: {}, limit: 20, offset, searchText: keyword }),
+          body:    JSON.stringify({ appliedFacets: {}, limit: WD_PAGE, offset, searchText: keyword }),
         }, 3, signal);
       } catch (err) {
         noteFailure('WD', company, whyFailed(err));
@@ -901,10 +919,11 @@ async function scrapeWorkday(company, baseUrl, tenant, site, searchTerms, titleM
       catch (err) { noteFailure('WD', company, `JSON parse error - ${err.message}`); break; }
 
       const batch = data.jobPostings || [];
-      const total = data.total || 0;
+      total = data.total || total;
       allJobs.push(...batch);
       offset += batch.length;
-      if (offset >= total || !batch.length) break;
+      dry = batch.some(j => titleMatches(j.title || '')) ? 0 : dry + 1;
+      if (batch.length < WD_PAGE || (total && offset >= total) || dry >= WD_DRY_PAGES) break;
       await sleep(300);
     }
   }
@@ -1644,9 +1663,10 @@ async function run({ cfg, kb, known = new Map(), connectionCompanies = [], signa
   const placeCheck = placeChecker(cfg);
   const efPlaces = efSearchPlaces(plan);
   let done = 0;
-  const tick = (msg) => { emit(msg, searchFrom + (1 - searchFrom) * (++done / (targets.length || 1))); };
+  const tick = (msg) => { emit(msg, searchFrom + (1 - searchFrom) * Math.min(1, ++done / (targets.length || 1))); };
   const LABEL = boards.SYSTEMS;
 
+  const refused = new Set();   // indexes of the boards to try once more at the end
   const searchBoard = async (t, i) => {
     let outcome = null;
     const report = o => { outcome = o; };
@@ -1660,6 +1680,9 @@ async function run({ cfg, kb, known = new Map(), connectionCompanies = [], signa
       noteFailure(TAGS[t.ats], name, `failed - ${withCause(err).message}`);
       results = [];
     }
+    // A board that answered "too many requests" until its retries ran out.
+    if (!results.length && boardFailures.some(f => f.company.startsWith(name) && /HTTP 429/.test(f.reason))) refused.add(i);
+    else refused.delete(i);
     if (outcome) for (const c of [t.company, ...t.sharedBy].filter(Boolean)) kb.markSearched(c, t.ats, b, outcome);
     if (t.sharedBy.length) results = sharedRoles(results, t, kb);
     found[i] = results;
@@ -1691,6 +1714,23 @@ async function run({ cfg, kb, known = new Map(), connectionCompanies = [], signa
     }
   };
   await Promise.all(Array.from({ length: Math.min(LANES_AT_ONCE, queue.length) }, worker));
+
+  // Boards that kept answering "too many requests" are tried once more, after
+  // a rest, now that every other board has been read.
+  if (refused.size && !signal?.aborted) {
+    const again = [...refused];
+    const names = again.map(i => targets[i].company).filter(Boolean);
+    emit(`Waiting ${REFUSED_REST_MS / 1000}s to try ${again.length} board(s) again that asked JobSift to slow down: ${names.join(', ')}`, 1);
+    await sleep(REFUSED_REST_MS, signal);
+    for (const i of again) {
+      if (signal?.aborted) break;
+      const name = targets[i].company || '';
+      for (let k = boardFailures.length - 1; k >= 0; k--) {
+        if (name && boardFailures[k].company.startsWith(name) && /HTTP 429/.test(boardFailures[k].reason)) boardFailures.splice(k, 1);
+      }
+      await searchBoard(targets[i], i);
+    }
+  }
   const allFound = found.filter(Boolean).flat();
 
   // Dedup by ATS URL within this run

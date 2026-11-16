@@ -656,8 +656,10 @@ async function run(mergePayload, cfgIn, { cardOnly = false } = {}) {
 
   const locationsToGeocode = new Set();
   // Remote choices need no place; the offices a remote role names do (see
-  // the near-office check in the track loop).
-  for (const r of allResults) {
+  // the near-office check in the track loop). Cards are not looked up ahead:
+  // most are rejected on something else first, and a place gate looks up the
+  // rest as it reaches them.
+  for (const r of (cardOnly ? [] : allResults)) {
     const loc = normalizeLocationDisplay((r.location || '').trim());
     for (const o of officesOf(loc)) locationsToGeocode.add(o);
   }
@@ -716,7 +718,7 @@ async function run(mergePayload, cfgIn, { cardOnly = false } = {}) {
     const onsiteLabelIgnored = countryOnly && wtBucket(wtMut) === 'in-person' && !jid.startsWith('ats_');
     if (countryOnly && wtBucket(wtMut) === 'in-person') wtMut = 'Remote';
 
-    const locDisplay = loc || (/remote/i.test(wtMut) ? 'Remote - US' : 'USA');
+    const locDisplay = loc || (countryOnly || /remote/i.test(wtMut) ? 'Remote - US' : 'USA');
     // "Irvine, CA +2 more": locations the listing does not name.
     const moreUnlisted = Number(/\+\s*(\d+)\s+more\b/i.exec(r.location || '')?.[1] || 0);
     let wb  = wtBucket(wtMut);

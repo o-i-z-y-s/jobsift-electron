@@ -10,12 +10,17 @@
  * card is judged on what it shows before its posting is opened, and a posting
  * an earlier run read, found closed, or already showed is not opened again.
  * Postings are opened at most MAX_DETAIL_WORKERS at a time, with a pause
- * between them. When Jobright refuses a page, the session ends, or postings
- * stop loading, nothing more is requested in that run.
+ * between them, and the pause grows while postings fail to load. When
+ * Jobright refuses a page, answers any request with "too many requests", the
+ * session ends, or postings stop loading, nothing more is requested in that
+ * run. The hidden windows
+ * load no pictures, fonts, media, or third-party tracking scripts, since only
+ * the pages' text is read, and a page that does not load in LOAD_TIMEOUT_MS
+ * is given up on.
  */
 
-const { BrowserWindow } = require('electron');
-const { searchPlan, COUNTRY, MAX_DETAIL_WORKERS, EXPERIENCE_LEVELS } = require('../criteria');
+const { BrowserWindow, session } = require('electron');
+const { searchPlan, COUNTRY, MAX_DETAIL_WORKERS, MIN_SCROLL_PAUSE_MS, EXPERIENCE_LEVELS } = require('../criteria');
 const { cardFields } = require('../sources');
 const evalEngine = require('../eval');
 const runlog = require('../runlog');
@@ -37,7 +42,7 @@ function sleep(ms) {
 // these: it evaluates in the page's own world, and contextIsolation only
 // governs a preload script, which this window does not have.
 function makeHiddenWindow() {
-  return new BrowserWindow({
+  const win = new BrowserWindow({
     show: false,
     webPreferences: {
       contextIsolation: true,
@@ -45,6 +50,71 @@ function makeHiddenWindow() {
       sandbox:          true,
     },
   });
+  const id = win.webContents.id;
+  hiddenWindows.add(id);
+  win.once('closed', () => hiddenWindows.delete(id));
+  return win;
+}
+
+// ── Requests the hidden windows skip ──────────────────────────────────────────
+// Only a page's text is read, so its pictures, fonts, and media are not
+// requested, nor is anything from the advertising and analytics services
+// below. Style sheets are kept: what text a page shows depends on them.
+const hiddenWindows = new Set();   // webContents ids of the open hidden windows
+const SKIPPED_TYPES = new Set(['image', 'media', 'font']);
+const TRACKERS = /(?:^|\.)(?:google-analytics\.com|googletagmanager\.com|doubleclick\.net|googlesyndication\.com|googleadservices\.com|facebook\.net|facebook\.com|bing\.com|clarity\.ms|tiktok\.com|ttwstatic\.com|linkedin\.com|licdn\.com|hotjar\.com|segment\.io|segment\.com|mixpanel\.com|amplitude\.com|sentry\.io|intercom\.io|intercomcdn\.com|fullstory\.com|hs-scripts\.com|hs-analytics\.net|hubspot\.com|twitter\.com|reddit\.com|redditstatic\.com|snapchat\.com|sc-static\.net|criteo\.com|criteo\.net|taboola\.com|outbrain\.com)$/i;
+
+function skipped(d) {
+  if (!hiddenWindows.has(d.webContentsId) || d.resourceType === 'mainFrame') return false;
+  if (SKIPPED_TYPES.has(d.resourceType)) return true;
+  try { return TRACKERS.test(new URL(d.url).hostname); } catch { return false; }
+}
+
+/**
+ * Watches the app's web requests for the length of a run: skips the ones
+ * above in the hidden windows, counts every request by site and status
+ * ("cached": answered from the browser cache without asking the site;
+ * "skipped": never sent), and stops the run (halt) when Jobright answers any
+ * request of a hidden window, a page or the data a page asks for, with HTTP
+ * 429. Returns a function that ends the watch and returns the count (a
+ * runlog.tally). The count also has sent(), how many requests Jobright's own
+ * sites answered so far, and kinds(), those requests by type and address
+ * pattern, most frequent first, to show what a page asks for.
+ */
+function watchRequests(halt) {
+  const made = runlog.tally();
+  const kinds = new Map();
+  let sent = 0;
+  // "/jobs/info/6af4..." -> "/jobs/info/*": ids and long names are not part of the pattern.
+  const pattern = url => new URL(url).pathname.split('/').slice(0, 5)
+    .map(p => (/\d{3,}|^[0-9a-f-]{12,}$|.{28,}/i.test(p) ? '*' : p)).join('/') || '/';
+  made.sent = () => sent;
+  made.kinds = (top = 25) => [...kinds.entries()].sort((a, b) => b[1] - a[1]).slice(0, top).map(([k, n]) => `${k} x${n}`);
+  const web = session.defaultSession.webRequest;
+  const isWeb = url => /^https?:/i.test(url);
+  const fromJobright = d => {
+    try { return hiddenWindows.has(d.webContentsId) && /(?:^|\.)jobright\.ai$/i.test(new URL(d.url).hostname); } catch { return false; }
+  };
+  web.onBeforeRequest((d, done) => done({ cancel: skipped(d) }));
+  web.onCompleted(d => {
+    if (!isWeb(d.url)) return;
+    made.count(d.url, d.fromCache ? 'cached' : d.statusCode);
+    if (!d.fromCache && fromJobright(d)) {
+      sent++;
+      try { const k = `${d.resourceType} ${new URL(d.url).hostname}${pattern(d.url)}`; kinds.set(k, (kinds.get(k) || 0) + 1); } catch { /* not counted by kind */ }
+    }
+    if (d.statusCode === 429 && fromJobright(d)) {
+      runlog.log(`    ${d.method || 'GET'} ${d.url} -> HTTP 429`);
+      stop(halt, new StopRun('Jobright answered "too many requests" (HTTP 429)', true));
+    }
+  });
+  web.onErrorOccurred(d => { if (isWeb(d.url)) made.count(d.url, /BLOCKED_BY_CLIENT/.test(d.error) ? 'skipped' : 'failed'); });
+  return Object.assign(() => {
+    web.onBeforeRequest(null);
+    web.onCompleted(null);
+    web.onErrorOccurred(null);
+    return made;
+  }, { made });
 }
 
 // Titles that are really HTTP/server error pages, not jobs. A gateway error
@@ -70,9 +140,16 @@ async function js(win, code) {
   return win.webContents.executeJavaScript(code);
 }
 
-// A reason to request nothing more from Jobright in this run.
-class StopRun extends Error {}
-const REFUSED = new Set([401, 403, 429]);
+// A reason to request nothing more from Jobright in this run. refused: Jobright
+// turned a request away (HTTP 403 or 429), as opposed to the session ending.
+class StopRun extends Error {
+  constructor(message, refused = false) { super(message); this.refused = refused; }
+}
+const REFUSED = new Set([403, 429]);
+const stop = (halt, why) => {
+  if (!halt.reason) halt.reason = why.message;
+  halt.refused = halt.refused || !!why.refused;
+};
 
 const atLogin = win => {
   try { return /login/i.test(new URL(win.webContents.getURL()).pathname); } catch { return false; }
@@ -83,24 +160,31 @@ const atLogin = win => {
  * and rejects on did-fail-load, but does NOT reject on an HTTP 4xx/5xx
  * response: an error page loads "successfully" with the error HTML as its
  * body, so the status is read from did-navigate. Throws StopRun when Jobright
- * refuses the page or sends it to the sign-in page.
+ * refuses the page or sends it to the sign-in page, and an Error("timeout")
+ * when the page has not loaded in LOAD_TIMEOUT_MS.
  */
+const LOAD_TIMEOUT_MS = 45000;
 async function loadPage(win, url) {
   let status = 0;
+  let timer = null;
   const began = Date.now();
   const onNav = (_e, _url, code) => { if (typeof code === 'number') status = code; };
   win.webContents.on('did-navigate', onNav);
   try {
-    await win.loadURL(url);
+    const load = win.loadURL(url);
+    load.catch(() => {});   // after a timeout, its own failure has nowhere to go
+    await Promise.race([load, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), LOAD_TIMEOUT_MS); })]);
   } catch (err) {
+    if (err.message === 'timeout') { try { win.webContents.stop(); } catch { /* window already gone */ } }
     runlog.log(`    GET ${url} -> failed: ${err.message} (${Date.now() - began} ms)`);
     throw err;
   } finally {
+    clearTimeout(timer);
     win.webContents.removeListener('did-navigate', onNav);
   }
   runlog.log(`    GET ${url} -> HTTP ${status || '?'} (${Date.now() - began} ms)${atLogin(win) ? ', sent to the sign-in page' : ''}`);
-  if (REFUSED.has(status)) throw new StopRun(`Jobright refused a page (HTTP ${status})`);
-  if (atLogin(win)) throw new StopRun('the Jobright session expired - please sign in again');
+  if (REFUSED.has(status)) throw new StopRun(`Jobright refused a page (HTTP ${status})`, true);
+  if (status === 401 || atLogin(win)) throw new StopRun('the Jobright session expired - please sign in again');
   return status;
 }
 
@@ -224,13 +308,13 @@ async function dismissPopups(win) {
  * Each card is read once: a card that has been read is marked on the page,
  * and each pass reads only the unmarked ones.
  */
-async function collectListingUrls(win, minPct, seen, scrollPauseMs, signal, passControl = null) {
+async function collectListingUrls(win, minPct, seen, scrollPauseMs, { signal, passControl, halt }) {
   const results = [];
   const here = new Set();  // the cards this search has loaded, including ones an earlier search found
   let stall = 0;  // consecutive scroll passes that loaded no new cards (end guard)
 
   while (true) {
-    if (signal?.aborted || passControl?.abort) break;
+    if (signal?.aborted || passControl?.abort || halt.reason) break;
 
     const cards = await js(win, `
       (function() {
@@ -295,7 +379,7 @@ async function collectListingUrls(win, minPct, seen, scrollPauseMs, signal, pass
       })()
     `);
 
-    await sleep(scrollPauseMs);
+    await sleep(scrollPauseMs * (1 + Math.random() * 0.3));
 
     const newH = await js(win, `
       (function() {
@@ -461,7 +545,7 @@ async function extractDetail(win, item) {
 
    } catch (err) {
     if (err instanceof StopRun) throw err;
-    record.error = err.message === 'Navigation timeout' ? 'timeout' : err.message;
+    record.error = err.message;
     if (attempt < MAX_ATTEMPTS) await sleep(RETRY_PAUSE_MS);
    }
   }
@@ -471,8 +555,14 @@ async function extractDetail(win, item) {
 
 // ── Worker pool ───────────────────────────────────────────────────────────────
 
-const DETAIL_PAUSE_MS = 1000;
-const RETRY_PAUSE_MS  = 3000;
+// The pause before each posting: DETAIL_PAUSE_MS, plus up to as much again.
+// It doubles with each posting that fails to load, up to MAX_DETAIL_PAUSE_MS,
+// and eases back a quarter with each one that loads.
+const DETAIL_PAUSE_MS     = 1000;
+const MAX_DETAIL_PAUSE_MS = 30000;
+const RETRY_PAUSE_MS      = 3000;
+// The rest between one search and the next, plus up to as much again.
+const BETWEEN_PASSES_MS   = 3000;
 // Postings failing to load this many times in a row means Jobright is not
 // answering; the rest are left for a later run.
 const MAX_FAILS_IN_A_ROW = 5;
@@ -482,10 +572,10 @@ const unusable = r => !!r.error && !r.is_closed && !r.title && !r.body_text && !
 
 /**
  * Process detail pages using a pool of N hidden BrowserWindows, each pausing
- * DETAIL_PAUSE_MS (plus up to as much again) between pages.
+ * between pages (see DETAIL_PAUSE_MS).
  * N comes from config.settings.detail_workers, at most MAX_DETAIL_WORKERS.
  * Returns { read, closed }: the postings read, and a short record for each
- * found closed. onRead is given each of both as it is read. Sets halt.reason
+ * found closed. onRead is given each of both as it is read. Sets halt
  * and stops when Jobright refuses a page, the session ends, or postings stop
  * loading.
  */
@@ -493,7 +583,7 @@ async function fetchDetailsPool(listings, nWorkers, { signal, passControl, halt,
   const workers = Array.from({ length: Math.min(nWorkers, listings.length) }, makeHiddenWindow);
   const results = new Array(listings.length);
   let nextIdx = 0;
-  let done = 0, failsInARow = 0;
+  let done = 0, failsInARow = 0, pause = DETAIL_PAUSE_MS;
 
   async function workerLoop(win) {
     try {
@@ -501,7 +591,7 @@ async function fetchDetailsPool(listings, nWorkers, { signal, passControl, halt,
         if (signal?.aborted || passControl?.abort || halt.reason) break;
         const idx = nextIdx++;
         if (idx >= listings.length) break;
-        if (idx >= nWorkers) await sleep(DETAIL_PAUSE_MS * (1 + Math.random()));
+        if (idx >= nWorkers) await sleep(pause * (1 + Math.random()));
         try {
           const full = await extractDetail(win, listings[idx]);
           const detail = full.is_closed ? { jid: full.jid, url: full.url, is_closed: true, error: 'CLOSED' } : full;
@@ -511,10 +601,13 @@ async function fetchDetailsPool(listings, nWorkers, { signal, passControl, halt,
           if (onTick) onTick(done, listings.length, detail);
           runlog.log(`    posting ${detail.jid}: ${detail.is_closed ? 'closed' : unusable(detail) ? `failed (${detail.error})` : detail.error ? `read, with ${detail.error}` : 'read'}`);
           failsInARow = unusable(detail) ? failsInARow + 1 : 0;
-          if (failsInARow >= MAX_FAILS_IN_A_ROW) halt.reason = 'Jobright postings stopped loading';
+          const slower = unusable(detail) ? Math.min(pause * 2, MAX_DETAIL_PAUSE_MS) : Math.max(DETAIL_PAUSE_MS, pause * 0.75);
+          if (slower > pause) runlog.log(`    pausing ${Math.round(slower / 1000)}s or more between postings`);
+          pause = slower;
+          if (failsInARow >= MAX_FAILS_IN_A_ROW) stop(halt, new StopRun('Jobright postings stopped loading'));
           if (!unusable(detail) && onRead) onRead(detail);
         } catch (err) {
-          if (err instanceof StopRun) { halt.reason = err.message; break; }
+          if (err instanceof StopRun) { stop(halt, err); break; }
           // Record as error rather than crashing the whole pool
           console.error(`    Worker error on ${listings[idx].jid}: ${err.message}`);
           done++;
@@ -548,7 +641,8 @@ async function fetchDetailsPool(listings, nWorkers, { signal, passControl, halt,
  * onProgress(text, share) is given what the pass is doing and how far it is.
  */
 async function runSearch(searchCfg, ctx, onProgress) {
-  const { cfg, known, closed, shown, minPct, scrollPause, nWorkers, seen, signal, passControl } = ctx;
+  const { cfg, known, closed, shown, minPct, scrollPause, nWorkers, seen, signal, passControl, halt, sentSoFar } = ctx;
+  const sentAtStart = sentSoFar();
   console.log(`\n  ${'='.repeat(56)}`);
   console.log(`  Pass: ${searchCfg.label}`);
   console.log(`  URL:  ${searchCfg.url}`);
@@ -568,8 +662,12 @@ async function runSearch(searchCfg, ctx, onProgress) {
 
     console.log(`    Collecting listings >= ${minPct}% match...`);
     onProgress('collecting listings', 0);
-    const found = await collectListingUrls(win, minPct, seen, scrollPause, signal, passControl);
+    const found = await collectListingUrls(win, minPct, seen, scrollPause, ctx);
     win.destroy();
+    const sentSearching = sentSoFar() - sentAtStart;
+    runlog.log(`    the search and its scrolling: ${sentSearching} requests answered by Jobright`);
+    // Stopped mid-search: the cards are not all there, so none are judged.
+    if (halt.reason) return [];
     // A range Jobright does not offer is searched with a longer one; cards
     // posted before the run's own range are left out.
     const inRange = found.filter(c => !(evalEngine.daysFromCard(c.card_text.split('\n')[0]) > searchCfg.maxDays));
@@ -606,6 +704,7 @@ async function runSearch(searchCfg, ctx, onProgress) {
       onProgress(`opening postings, ${done}/${tot}`, done / tot);
     });
     console.log(`\n    ${opened.read.length} records extracted`);
+    runlog.log(`    opening ${listings.length} postings: ${sentSoFar() - sentAtStart - sentSearching} requests answered by Jobright`);
     onProgress(`${summary.replace(/ to open$/, ' opened')}${opened.closed.length ? `, ${opened.closed.length} of them closed` : ''}`, 1);
     return [...opened.read, ...reused, ...avoided, ...gone, ...opened.closed];
   } finally {
@@ -617,7 +716,7 @@ async function runSearch(searchCfg, ctx, onProgress) {
 
 /**
  * run({ cfg, daysAgo, known, closed, shown, signal, onProgress, onRead })
- *   -> { records, complete }
+ *   -> { records, complete, refused, requests }
  *   known                       postings read in earlier runs, by jid; not opened again
  *   closed                      jids of postings earlier runs found closed; not opened again
  *   shown                       jids of roles earlier runs already showed; left out
@@ -628,13 +727,15 @@ async function runSearch(searchCfg, ctx, onProgress) {
  *   records    the job records, with a short record ({ jid, is_closed: true })
  *              for each closed posting, which is kept on file but is not a role
  *   complete   whether every search ran to its end, so the whole period was covered
+ *   refused    whether Jobright turned a request away (HTTP 403 or 429)
+ *   requests   every web request made during the run, by site and status (a runlog.tally)
  */
 async function run({ cfg, daysAgo = 7, known = new Map(), closed = new Set(), shown = new Set(), signal, onProgress, onRead = null, passControl = null }) {
   const emit = (msg, pct, line) => { if (onProgress) onProgress(msg, pct, line); };
 
   const settings      = cfg.settings       || {};
   const minPct        = settings.min_match_pct  ?? 60;
-  const scrollPause   = settings.scroll_pause_ms ?? 1800;
+  const scrollPause   = Math.max(MIN_SCROLL_PAUSE_MS, settings.scroll_pause_ms ?? 1800);
   const nWorkers      = Math.min(MAX_DETAIL_WORKERS, Math.max(1, settings.detail_workers ?? MAX_DETAIL_WORKERS));
 
   const searches = buildSearches(cfg, daysAgo);
@@ -642,18 +743,21 @@ async function run({ cfg, daysAgo = 7, known = new Map(), closed = new Set(), sh
     console.log(cfg.jobright?.search_titles?.length
       ? '\nJobright Scraper - no searches: no track accepts remote work or has a location'
       : '\nJobright Scraper - no searches: add search titles for Jobright on the Sources tab');
-    return { records: [], complete: false };
+    return { records: [], complete: false, refused: false, requests: runlog.tally() };
   }
   console.log(`\nJobright Scraper - ${searches.length} pass(es): ${searches.map(s => s.id).join(', ')}`);
 
-  const halt = { reason: null };  // set when nothing more is to be requested from Jobright
-  const ctx = { cfg, known, closed, shown, minPct, scrollPause, nWorkers, seen: new Set(), signal, passControl, halt, onRead };
+  const halt = { reason: null, refused: false };  // set when nothing more is to be requested from Jobright
+  const stopWatching = watchRequests(halt);
+  const sentSoFar = () => stopWatching.made.sent();
+  const ctx = { sentSoFar, cfg, known, closed, shown, minPct, scrollPause, nWorkers, seen: new Set(), signal, passControl, halt, onRead };
   const allResults = [];
   let complete = true;
   let passIdx = 0;
 
   for (const search of searches) {
     if (signal?.aborted) break;
+    if (passIdx > 0) await sleep(BETWEEN_PASSES_MS * (1 + Math.random()));
     if (passControl) passControl.abort = false;  // reset the per-pass skip flag
     // Everything a pass reports is one line of the activity feed.
     const say = (text, share) => emit(`Pass ${search.label}: ${text}`, (passIdx + share) / searches.length, `pass:${search.id}`);
@@ -669,7 +773,7 @@ async function run({ cfg, daysAgo = 7, known = new Map(), closed = new Set(), sh
       }
     } catch (err) {
       complete = false;
-      if (err instanceof StopRun) halt.reason = err.message;
+      if (err instanceof StopRun) stop(halt, err);
       else {
         console.error(`  Pass "${search.label}" failed: ${err.message}`);
         say(`failed (${err.message}); continuing`, 1);
@@ -683,6 +787,7 @@ async function run({ cfg, daysAgo = 7, known = new Map(), closed = new Set(), sh
     }
     passIdx++;
   }
+  const requests = stopWatching();
   if (signal?.aborted) complete = false;
 
   // A posting found by more than one search is kept once.
@@ -693,7 +798,7 @@ async function run({ cfg, daysAgo = 7, known = new Map(), closed = new Set(), sh
   }
 
   console.log(`\n  Jobright done - ${deduped.length} records`);
-  return { records: deduped, complete };
+  return { records: deduped, complete, refused: halt.refused, requests };
 }
 
 module.exports = { run };

@@ -21,7 +21,7 @@ const connections = require('./connections');
 const applied = require('./applied');
 const history = require('./history');
 const runlog = require('./runlog');
-const { newListings } = require('./sources');
+const { newListings, shownKeys } = require('./sources');
 const boards     = require('./boards');
 
 // A fingerprint of the code that judges roles, saved with each run's results,
@@ -110,15 +110,31 @@ function appliedRole(r) {
   return { id: s(r.id), company: s(r.company), role_title: s(r.role_title), apply_url: s(r.apply_url) };
 }
 
+// The saved connections and their companies by count, read again only when
+// the file has changed: the summary below is rebuilt after every company
+// looked up.
+let _connections = null;   // { mtimeMs, data, companies }
+function connectionsOnFile() {
+  let mtimeMs;
+  try { mtimeMs = fs.statSync(path.join(dataDir(), connections.FILE)).mtimeMs; }
+  catch { _connections = null; return null; }
+  if (!_connections || _connections.mtimeMs !== mtimeMs) {
+    const data = connections.load(dataDir());
+    _connections = data ? { mtimeMs, data, companies: connections.companiesByCount(data.people) } : null;
+  }
+  return _connections;
+}
+
 // What the config page shows: counts, the import date, and each company with
 // its board status. No person's name is included.
 function connectionsSummary() {
-  const data = connections.load(dataDir());
-  if (!data) return null;
+  const onFile = connectionsOnFile();
+  if (!onFile) return null;
+  const { data } = onFile;
   const kb = knownBoards();
   const now = Date.now();
   let lookupCount = 0, lookupSeconds = 0;
-  const companies = connections.companiesByCount(data.people).map(c => {
+  const companies = onFile.companies.map(c => {
     if (boards.lookupDue(kb, c.name, now)) { lookupCount++; lookupSeconds += boards.lookupSeconds(c.name); }
     return { name: c.name, count: c.count, coverage: boards.coverage(kb, c.name) };
   });
@@ -432,17 +448,10 @@ async function runPipeline(options) {
 
   // Per-source isolation: a failure in one source (e.g. a network timeout on a
   // search-page load) must not abort the whole run and discard the other source.
-  // Earlier runs' saved results: what they accepted, and so already showed,
-  // is left out of this run (see sources.newListings). includeSeen keeps it all.
-  const priorRuns = [];
-  if (!includeSeen && fs.existsSync(evaluatedDir())) {
-    for (const f of fs.readdirSync(evaluatedDir()).filter(n => n.endsWith('.json'))) {
-      try { priorRuns.push(JSON.parse(fs.readFileSync(path.join(evaluatedDir(), f), 'utf8'))); }
-      catch { /* skip malformed files */ }
-    }
-  }
-  const shown = new Set(priorRuns.filter(run => run?.evaluator === EVALUATOR_ID)
-    .flatMap(run => (run.accepted?.roles || []).map(role => role.id)).filter(Boolean));
+  // What earlier runs accepted, and so already showed, is left out of this
+  // run (see history.shown and sources.newListings). includeSeen keeps it all.
+  const shownRoles = includeSeen ? [] : history.shown(evaluatedDir(), dataDir(), shownKeys, EVALUATOR_ID);
+  const shown = new Set(shownRoles.map(s => s.id).filter(Boolean));
 
   // A scheduled run searches Jobright only as far back as the last completed
   // run, when the runs so far already cover the rest of its period with these
@@ -462,11 +471,14 @@ async function runPipeline(options) {
   const earlier = history.jobright(rawDir());
   console.log(`Jobright: ${earlier.read.size} postings read and ${earlier.closed.size} found closed in the last ${history.KEEP_DAYS} days are on file`);
   const reads = history.partial(rawDir(), 'jobright', ts);
-  const jobrightRequests = countRequests();
   let jobrightAll = [];
   let jobrightFailed = false;
+  let jobrightRequests = null;
   passControl = { abort: false };  // reset; the Abort Pass button flips abort=true
   try {
+    // After Jobright turns a request away, it is left alone for a while.
+    const resting = history.restingUntil(dataDir());
+    if (resting) throw new Error(`Jobright turned a request away earlier and is left alone until ${new Date(resting).toTimeString().slice(0, 5)}`);
     const jobright = await jobrightScraper.run({
       cfg,
       daysAgo: jobrightDays,
@@ -485,6 +497,8 @@ async function runPipeline(options) {
         }),
     });
     jobrightAll = jobright.records;
+    jobrightRequests = jobright.requests;
+    if (jobright.refused) history.noteRefused(dataDir());
     if (jobright.complete) history.saveCoverage(dataDir(), covered, settingsKey, jobrightDays, started);
     console.log(`Jobright: ${jobright.complete ? 'every search ran to its end' : 'not every search ran to its end, so the next scheduled run searches the whole period again'}`);
   } catch (err) {
@@ -496,11 +510,16 @@ async function runPipeline(options) {
       pct: 55,
     });
   }
-  // Every request the hidden windows made, by site and status. "cached" ones
-  // were answered from the browser cache without asking the site.
-  const made = jobrightRequests.stop();
-  runlog.log(`Jobright requests: ${made.total()}`);
-  for (const line of made.lines()) runlog.log(`  ${line}`);
+  // Every request made during the Jobright step, by site and status (see
+  // watchRequests in scraper/jobright.js).
+  if (jobrightRequests) {
+    runlog.log(`Jobright requests: ${jobrightRequests.total()}`);
+    for (const line of jobrightRequests.lines()) runlog.log(`  ${line}`);
+    if (jobrightRequests.kinds) {
+      runlog.log(`Answered by Jobright's own sites: ${jobrightRequests.sent()}, most frequent first:`);
+      for (const line of jobrightRequests.kinds()) runlog.log(`  ${line}`);
+    }
+  }
   // The roles: every record but the closed postings.
   const jobrightRaw = jobrightAll.filter(r => !r.is_closed);
 
@@ -544,6 +563,7 @@ async function runPipeline(options) {
   broadcast('scrape:progress', { step: 'ats', message: 'Scraping ATS boards...', pct: 57 });
 
   let atsRaw = [];
+  let boardsSaved = Date.now();
   try {
     atsRaw = await atsScraper.run({
       cfg,
@@ -551,7 +571,14 @@ async function runPipeline(options) {
       known: history.boards(rawDir()),
       connectionCompanies,
       signal: scrapeAbort.signal,
-      onChecked: () => broadcast('connections:updated', connectionsSummary()),
+      onChecked: () => {
+        // A long round of lookups keeps what it found if the app closes.
+        if (Date.now() - boardsSaved > 15000) {
+          try { kb.save(); } catch (err) { console.error('Saving known boards failed:', err); }
+          boardsSaved = Date.now();
+        }
+        broadcast('connections:updated', connectionsSummary());
+      },
       onProgress: (msg, pct) =>
         broadcast('scrape:progress', {
           step: 'ats',
@@ -581,7 +608,7 @@ async function runPipeline(options) {
 
   // Each posting once, leaving out what an earlier run already accepted with
   // this same evaluator (see sources.newListings).
-  const merged = newListings([...jobrightRaw, ...atsRaw], priorRuns, EVALUATOR_ID);
+  const merged = newListings([...jobrightRaw, ...atsRaw], shownRoles);
 
   const mergePayload = {
     scraped_at: new Date().toISOString(),
@@ -625,18 +652,6 @@ async function runPipeline(options) {
   });
 
   return { outputPath, counts };
-}
-
-// Counts every web request made through the app's browser session until
-// stop() is called, which returns the count (a runlog.tally). During the
-// Jobright step these are the requests of the hidden Jobright windows.
-function countRequests() {
-  const made = runlog.tally();
-  const web = session.defaultSession.webRequest;
-  const isWeb = url => /^https?:/i.test(url);
-  web.onCompleted(d => { if (isWeb(d.url)) made.count(d.url, d.fromCache ? 'cached' : d.statusCode); });
-  web.onErrorOccurred(d => { if (isWeb(d.url)) made.count(d.url, 'failed'); });
-  return { stop() { web.onCompleted(null); web.onErrorOccurred(null); return made; } };
 }
 
 // ── Trigger scrape (used by tray and IPC handler) ─────────────────────────────
@@ -923,8 +938,21 @@ function registerIpc() {
 
 // ── Scheduler (delegates to src/scheduler.js) ─────────────────────────────────
 
-function setupScheduler(schedule) {
-  scheduler.setup(schedule, triggerScrape);
+// With catchUp (at app start), a run missed while the app was closed is made up.
+function setupScheduler(schedule, { catchUp = false } = {}) {
+  scheduler.setup(schedule, triggerScrape, catchUp ? lastRunTime() : null);
+}
+
+// When the last run saved its results, in milliseconds, or null without one.
+function lastRunTime() {
+  let latest = null;
+  try {
+    for (const f of fs.readdirSync(evaluatedDir()).filter(n => n.endsWith('.json'))) {
+      const t = fs.statSync(path.join(evaluatedDir(), f)).mtimeMs;
+      if (latest === null || t > latest) latest = t;
+    }
+  } catch { /* no results yet */ }
+  return latest;
 }
 
 // ── Crash safety ────────────────────────────────────────────────────────────────
@@ -991,7 +1019,7 @@ app.whenReady().then(async () => {
   // Restore scheduler + last-used scan period
   try {
     const cfg = cfgModule.load();
-    if (cfg._scheduler?.enabled) setupScheduler(cfg._scheduler);
+    if (cfg._scheduler?.enabled) setupScheduler(cfg._scheduler, { catchUp: true });
     if (typeof cfg._lastDaysAgo === 'number' && cfg._lastDaysAgo > 0) lastDaysAgo = cfg._lastDaysAgo;
   } catch { /* first run - no config yet */ }
 

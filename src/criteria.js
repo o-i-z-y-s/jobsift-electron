@@ -38,6 +38,7 @@
  *   tracks[]:   blocked_industries [] (on top of rejection_filters.blocked_industries)
  *   settings:   stale_after_days (blank = never lower a grade)
  *   settings:   detail_workers, Jobright postings opened at once (1 to MAX_DETAIL_WORKERS)
+ *   settings:   scroll_pause_ms, between scrolls of a Jobright search (MIN_SCROLL_PAUSE_MS or more)
  *   jobright:   search_titles [] (the titles Jobright is searched for),
  *               experience_levels [] (EXPERIENCE_LEVELS searched on Jobright;
  *               empty = every level)
@@ -51,6 +52,8 @@ const { DEFAULT_SOURCES, EMPLOYMENT_TYPES, NOT_STATED, POSTED_BY } = require('./
 
 const CONFIG_VERSION = 6;
 const MAX_DETAIL_WORKERS = 2;
+// The shortest pause between scrolls of a Jobright search, in milliseconds.
+const MIN_SCROLL_PAUSE_MS = 1000;
 // Jobright's experience levels, in its own order.
 const EXPERIENCE_LEVELS = ['Intern/New Grad', 'Entry Level', 'Mid Level', 'Senior Level', 'Lead/Staff', 'Director/Executive'];
 
@@ -634,7 +637,7 @@ const RULES = {
   skillPoints: SKILL_POINTS, max: MAX, gradeCutoffs: GRADE_CUTOFFS, acceptLabels: ACCEPT_LABEL,
   payDerivedPct: PAY_DERIVED_PCT, defaultRadiusMi: DEFAULT_RADIUS_MI, defaultStaleDays: DEFAULT_STALE_DAYS,
   employmentTypes: EMPLOYMENT_TYPES, notStated: NOT_STATED, postedBy: POSTED_BY, defaultSources: DEFAULT_SOURCES,
-  defaultConnections: DEFAULT_CONNECTIONS, configVersion: CONFIG_VERSION, maxDetailWorkers: MAX_DETAIL_WORKERS,
+  defaultConnections: DEFAULT_CONNECTIONS, configVersion: CONFIG_VERSION, maxDetailWorkers: MAX_DETAIL_WORKERS, minScrollPauseMs: MIN_SCROLL_PAUSE_MS,
   experienceLevels: EXPERIENCE_LEVELS,
 };
 
@@ -647,5 +650,5 @@ module.exports = {
   COUNTRY,
   migrateConfig, criteriaFromConfig, scoreJob, matchRole, ageAdjust, acceptFor, payBands, industryRequired, radiusFor,
   searchPlan,
-  ACCEPT, ACCEPT_LABEL, GRADE_CUTOFFS, RULES, CONFIG_VERSION, MAX_DETAIL_WORKERS, EXPERIENCE_LEVELS, DEFAULT_RADIUS_MI, DEFAULT_STALE_DAYS,
+  ACCEPT, ACCEPT_LABEL, GRADE_CUTOFFS, RULES, CONFIG_VERSION, MAX_DETAIL_WORKERS, MIN_SCROLL_PAUSE_MS, EXPERIENCE_LEVELS, DEFAULT_RADIUS_MI, DEFAULT_STALE_DAYS,
 };

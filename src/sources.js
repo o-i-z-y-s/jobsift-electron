@@ -256,25 +256,19 @@ function reqKeyOf(role) {
 
 const linkKey = r => (r.ats_url || r.apply_url || '').toLowerCase().replace(/\/$/, '');
 
+/** What identifies a role a run showed: its id, link, and posting key. */
+const shownKeys = role => ({ id: role.id || '', link: linkKey(role), key: reqKeyOf(role) });
+
 /**
  * The listings a run evaluates: each posting once (by id, posting key, or
- * link), leaving out those an earlier run accepted, and so already showed,
- * when that run used this same evaluator. Roles an earlier run rejected, and
- * roles judged by a different evaluator, are evaluated again.
- * priorRuns: earlier runs' saved results; evaluator: this run's EVALUATOR_ID.
+ * link), leaving out those in shown: the roles (as shownKeys) that earlier
+ * runs with this same evaluator accepted, and so already showed. Roles an
+ * earlier run rejected, and roles judged by a different evaluator, are
+ * evaluated again.
  */
-function newListings(records, priorRuns = [], evaluator = '') {
-  const priorLinks = new Set();
-  const priorKeys  = new Set();
-  for (const prior of priorRuns) {
-    if (!evaluator || prior?.evaluator !== evaluator) continue;
-    for (const role of (prior.accepted?.roles || [])) {
-      const u = linkKey(role);
-      if (u) priorLinks.add(u);
-      const k = reqKeyOf(role);
-      if (k) priorKeys.add(k);
-    }
-  }
+function newListings(records, shown = []) {
+  const priorLinks = new Set(shown.map(s => s.link).filter(Boolean));
+  const priorKeys  = new Set(shown.map(s => s.key).filter(Boolean));
   const ids = new Set(), links = new Set(), keys = new Set();
   const out = [];
   for (const r of records) {
@@ -344,5 +338,5 @@ const SOURCE_RANK = { employer: 0, staffing: 1, job_board: 2 };
 module.exports = {
   EMPLOYMENT_TYPES, NOT_STATED, POSTED_BY, DEFAULT_SOURCES, SOURCE_RANK, SAME_JOB_SHARE,
   normalizeEmploymentType, employmentTypeOf, sourcesFromConfig, postedBy, postedByAll, groupSameJob, hostOf, cardFields,
-  atsUrlKey, reqKeyOf, newListings,
+  atsUrlKey, reqKeyOf, newListings, shownKeys,
 };

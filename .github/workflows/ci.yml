@@ -28,10 +28,12 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
-          cache: "npm"
+          # These checks need no dependency cache.
+          package-manager-cache: false
 
+      # No install scripts: the checks below only read the installed packages.
       - name: Install from the audited lockfile
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: JavaScript syntax check
         run: |

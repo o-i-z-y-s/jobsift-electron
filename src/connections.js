@@ -205,5 +205,5 @@ function remove(dir) {
 }
 
 module.exports = {
-  companyWords, companyKey, notACompany, readLinkedInCsv, peopleByKey, companiesByCount, load, save, remove,
+  FILE, companyWords, companyKey, notACompany, readLinkedInCsv, peopleByKey, companiesByCount, load, save, remove,
 };

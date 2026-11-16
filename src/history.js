@@ -12,6 +12,11 @@
  *                       are read, so a run that ends early keeps its reads.
  *   Company boards      A posting whose text was downloaded in an earlier run
  *                       is not downloaded again (see scraper/ats-http.js).
+ *   Roles shown         The roles earlier runs accepted, and so already
+ *                       showed, kept in a small index so the saved results
+ *                       are not all read again on every run.
+ *   Jobright refusals   When Jobright last turned a request away, so it is
+ *                       left alone for REST_MINUTES after.
  *   Jobright coverage   The stretch of time Jobright has been searched for
  *                       with the current settings, so a scheduled run searches
  *                       only back to the last completed run.
@@ -28,6 +33,10 @@ const crypto = require('crypto');
 const KEEP_DAYS = 30;
 const DAY = 86400000;
 const COVERAGE_FILE = 'jobright_coverage.json';
+const SHOWN_FILE = 'shown_index.json';
+const REFUSED_FILE = 'jobright_refused.json';
+// How long Jobright is left alone after it turns a request away.
+const REST_MINUTES = 30;
 
 const rawName     = (source, ts) => `job-search-${source}-${ts}.json`;
 const partialName = (source, ts) => `job-search-${source}-${ts}.partial.jsonl`;
@@ -108,6 +117,55 @@ function partial(dir, source, ts) {
   };
 }
 
+// ── Jobright refusals ────────────────────────────────────────────────────────
+
+/** Records that Jobright turned a request away now. */
+function noteRefused(dir, now = Date.now()) {
+  try { fs.writeFileSync(path.join(dir, REFUSED_FILE), JSON.stringify({ at: now }), 'utf8'); } catch { /* not kept */ }
+}
+
+/** Until when Jobright is left alone (milliseconds), or 0 when it may be searched. */
+function restingUntil(dir, now = Date.now()) {
+  try {
+    const at = JSON.parse(fs.readFileSync(path.join(dir, REFUSED_FILE), 'utf8')).at;
+    const until = at + REST_MINUTES * 60000;
+    return Number.isFinite(at) && at <= now && until > now ? until : 0;
+  } catch { return 0; }
+}
+
+// ── Roles shown ──────────────────────────────────────────────────────────────
+
+/**
+ * The roles accepted by the saved results in resultsDir that were judged by
+ * this evaluator, each as pick(role) made it. They come from an index in
+ * indexDir that holds every results file's roles; only a results file that is
+ * new or has changed is read, and a deleted one drops out, so its roles can be
+ * shown again.
+ */
+function shown(resultsDir, indexDir, pick, evaluator) {
+  const indexFile = path.join(indexDir, SHOWN_FILE);
+  let before = {};
+  try { before = JSON.parse(fs.readFileSync(indexFile, 'utf8')).files || {}; } catch { /* first use */ }
+  let names = [];
+  try { names = fs.readdirSync(resultsDir).filter(n => n.endsWith('.json')); } catch { /* no results yet */ }
+  const files = {};
+  let changed = Object.keys(before).length !== names.length;
+  for (const name of names) {
+    try {
+      const st = fs.statSync(path.join(resultsDir, name));
+      const cur = before[name];
+      if (cur && cur.mtimeMs === st.mtimeMs && cur.size === st.size) { files[name] = cur; continue; }
+      const run = JSON.parse(fs.readFileSync(path.join(resultsDir, name), 'utf8'));
+      files[name] = { mtimeMs: st.mtimeMs, size: st.size, evaluator: run?.evaluator || '', roles: (run?.accepted?.roles || []).map(pick) };
+      changed = true;
+    } catch { changed = true; /* a malformed file is skipped, and tried again next run */ }
+  }
+  if (changed) {
+    try { fs.writeFileSync(indexFile, JSON.stringify({ version: 1, files }), 'utf8'); } catch { /* rebuilt next run */ }
+  }
+  return Object.values(files).filter(f => evaluator && f.evaluator === evaluator).flatMap(f => f.roles);
+}
+
 // ── Jobright coverage ────────────────────────────────────────────────────────
 // { key, from, to }: with the settings that hash to key, Jobright has been
 // searched for every posting made between from and to (milliseconds).
@@ -148,4 +206,4 @@ function saveCoverage(dir, cov, key, days, started) {
   catch { /* the next run searches its whole period */ }
 }
 
-module.exports = { KEEP_DAYS, rawName, jobright, boards, prune, partial, settingsKey, coverage, daysToSearch, saveCoverage };
+module.exports = { KEEP_DAYS, rawName, jobright, boards, prune, partial, shown, noteRefused, restingUntil, settingsKey, coverage, daysToSearch, saveCoverage };

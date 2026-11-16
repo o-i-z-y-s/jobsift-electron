@@ -344,7 +344,6 @@
     border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
   .badge.tag.applied { color: var(--tint-sky); background: color-mix(in srgb, var(--tint-sky) 12%, transparent);
     border-color: color-mix(in srgb, var(--tint-sky) 35%, transparent); cursor: help; }
-  .badge.tag.applied-company { cursor: help; }
   .badge.tag.conn { color: var(--green); background: color-mix(in srgb, var(--green) 12%, transparent); cursor: help; }
   .badge.tag.board { color: var(--flag); background: color-mix(in srgb, var(--flag) 10%, transparent);
     border-color: color-mix(in srgb, var(--flag) 30%, transparent); }
@@ -1461,12 +1460,11 @@ function passesFacets(r, hidden) {
 }
 
 // ── Applied ────────────────────────────────────────────────────
-// A role counts as applied to when it is the same posting, the same posting
-// found again, or the same title at the same company as one the user said they
-// applied to. Another title at that company only gets a muted label.
+// A role counts as applied to when it is the posting the user said they
+// applied to, or that posting found again with the same posting ID.
 const appliedFields = r => ({ id: r.id, company: r.company, role_title: r.role_title, apply_url: r.apply_url });
 function appliedMatch(r) { return (r.id && APPLIED[r.id]) || null; }
-function appliedHere(r) { const m = appliedMatch(r); return !!m && m.kind !== 'company'; }
+function appliedHere(r) { return !!appliedMatch(r); }
 function shortDate(iso) {
   const d = new Date(iso);
   return isNaN(d) ? '' : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
@@ -1496,13 +1494,9 @@ function appliedBadge(r) {
   const m = appliedMatch(r);
   if (!m) return '';
   const on = shortDate(m.applied_at);
-  if (m.kind === 'company') {
-    return `<span class="badge tag applied-company" title="${esc(`You applied to “${m.title}” at ${m.company} on ${on}.`)}">Applied to ${esc(m.company)} ${esc(on)}</span>`;
-  }
   const why = {
     posting: `You applied to this posting on ${on}.`,
     repost:  `You applied to this posting on ${on}. It has the same posting ID.`,
-    title:   `You applied to “${m.title}” at ${m.company} on ${on}, the same title at this company.`,
   }[m.kind];
   return `<span class="badge tag applied" title="${esc(why)}">Applied ${esc(on)}</span>`;
 }
@@ -1511,7 +1505,7 @@ function appliedBadge(r) {
 function applyCellInner(r) {
   const url = safeUrl(r.apply_url);
   const m = appliedMatch(r);
-  if (m && (m.kind === 'posting' || m.kind === 'repost')) {
+  if (m) {
     return `<div class="apply-cell"><button class="apply-done" title="Click if you did not apply" onclick="appliedAnswer(event, this, false)">Applied ${esc(shortDate(m.applied_at))}</button></div>`;
   }
   if (r.id && ASKING.has(r.id)) {

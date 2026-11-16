@@ -512,7 +512,7 @@
   <div class="field-row col4">
     <div class="field">
       <label>Scroll pause (ms between scrolls)</label>
-      <input type="number" id="scroll_pause_ms" min="0">
+      <input type="number" id="scroll_pause_ms" min="1000">
     </div>
     <div class="field">
       <label>Jobright postings opened at once</label>
@@ -521,7 +521,8 @@
   </div>
 
   <h3 id="sched-section">Scheduled runs</h3>
-  <p class="hint">JobSift must be running (it stays in the tray) for a scheduled run to happen. A scheduled run searches Jobright
+  <p class="hint">JobSift must be running (it stays in the tray) for a scheduled run to happen; one missed while it was closed
+    starts a minute after it next opens. A scheduled run searches Jobright
     only as far back as the last completed run, as long as your settings have not changed since; otherwise it searches the
     whole timeframe below.</p>
   <div class="field" style="margin-bottom:10px">
@@ -1144,6 +1145,7 @@ function collectSettings() {
   s.stale_after_days = num($('stale_after_days').value);
   s.min_match_pct    = num($('min_match_pct').value);
   s.scroll_pause_ms  = num($('scroll_pause_ms').value);
+  if (s.scroll_pause_ms !== null) s.scroll_pause_ms = Math.max(RULES.minScrollPauseMs, s.scroll_pause_ms);
   s.detail_workers   = num($('detail_workers').value);
   if (s.detail_workers !== null) s.detail_workers = Math.min(RULES.maxDetailWorkers, Math.max(1, s.detail_workers));
   CONFIG.user_state = $('user_state').value;

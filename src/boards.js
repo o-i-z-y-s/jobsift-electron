@@ -375,6 +375,7 @@ function guessSlugs(company) {
 // ── Polite requests ─────────────────────────────────────────────────────────
 
 const GAP_MS = 500;
+const RATE_WAIT_MS = [5000, 30000];   // the shortest and longest wait after an HTTP 429
 let lastRequest = 0;
 
 function sleep(ms, signal) {
@@ -386,7 +387,7 @@ function sleep(ms, signal) {
 
 /**
  * fetch, at least GAP_MS after the previous lookup request, with a timeout. One
- * retry on 429/5xx. A request that fails throws with the address in err.url.
+ * retry on 429/5xx, after a wait. A request that fails throws with the address in err.url.
  */
 async function politeGet(url, signal, opts = {}) {
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -407,7 +408,12 @@ async function politeGet(url, signal, opts = {}) {
       if (err && typeof err === 'object' && !err.url) err.url = url;
       throw err;
     }
-    if ((r.status === 429 || r.status >= 500) && attempt === 0) { await sleep(1000, signal); continue; }
+    if ((r.status === 429 || r.status >= 500) && attempt === 0) {
+      // A site that asks for fewer requests is waited on as long as it says, within RATE_WAIT_MS.
+      const asked = Number(r.headers.get('retry-after')) * 1000;
+      await sleep(r.status === 429 ? Math.min(Math.max(asked || 0, RATE_WAIT_MS[0]), RATE_WAIT_MS[1]) : 1000, signal);
+      continue;
+    }
     return r;
   }
   return null;
